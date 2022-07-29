@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+
+import tqdm
+import fargv
+import hashlib
+import glob
+from pathlib import Path
+
+if __name__=="__main__":
+    p = {
+        "inputs":set([]),
+        "overwrite_existing": True,
+        "output_dir":"./data/ingested"
+    }
+    args, _ = fargv.fargv(p)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    for img in tqdm.tqdm(args.inputs):
+        if not Path(img).is_file():
+            raise IOError("Could not load file")
+        img_bytes = open(img, "rb").read()
+        md5 = hashlib.md5(img_bytes).hexdigest()
+        outfile = f"{args.output_dir}/{md5}.{img.split('.')[-1].lower()}"
+        if Path(img).is_file() and not args.overwrite_existing:
+            raise IOError("Could not rename file, file exists")
+        else:
+            open(outfile,"wb").write(img_bytes)
+
+
+
+
