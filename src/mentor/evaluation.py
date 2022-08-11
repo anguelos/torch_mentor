@@ -40,7 +40,7 @@ class TwoClassEvaluator():
                         with torch.no_grad():
                                 losses = self.loss_fn(y_score, y_true).sum()
                         result["loss"] = losses.cpu().numpy()
-                y_score, y_train = y_score.cpu().numpy(), y_train.cpu().numpy() 
+                y_score, y_true = y_score.cpu().numpy(), y_true.cpu().numpy() 
                 roc_auc = sklearn.metrics.roc_auc_score(y_true=y_true, y_score=y_score)
                 accuracy = ((y_score>.5) == y_true).mean()
                 result.update({"ROC AUC": roc_auc, "Accuracy": accuracy})
