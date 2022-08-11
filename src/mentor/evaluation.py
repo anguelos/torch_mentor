@@ -48,9 +48,10 @@ class TwoClassEvaluator():
                 y_true = y_true.float()
                 y_pred, y_true = y_pred.cpu().numpy(), y_true.cpu().numpy() 
                 roc_auc = sklearn.metrics.roc_auc_score(y_true=y_true, y_score=y_pred)
-                tp = ((y_pred==y_true) & (y_pred>.5)).sum()
-                fp = ((y_pred!=y_true) & (y_pred>.5)).sum()
-                tn = ((y_pred==y_true) & (y_pred<.5)).sum()
+                
+                tp = ((y_pred==y_true) & (y_pred>.5)).astype(float).sum()
+                fp = ((y_pred!=y_true) & (y_pred>.5)).astype(float).sum()
+                tn = ((y_pred==y_true) & (y_pred<.5)).astype(float).sum()
                 recall = tp /(tp+tn)
                 precision = tp /(tp+fp)
                 f1 = (2*recall*precision)/(recall+precision)
