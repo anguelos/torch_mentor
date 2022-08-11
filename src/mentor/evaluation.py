@@ -45,8 +45,9 @@ class TwoClassEvaluator():
                 y_true = y_true.float()
                 y_score, y_true = y_score.cpu().numpy(), y_true.cpu().numpy() 
                 roc_auc = sklearn.metrics.roc_auc_score(y_true=y_true, y_score=y_score)
-                accuracy = ((y_score>.5) == y_true).mean()
-                result.update({"ROC AUC": roc_auc, "Accuracy": accuracy})
+                f1 = sklearn.metrics.f1_score(y_true=y_true, y_pred=y_score)
+                accuracy = ((y_score>.5) == y_true>.5).mean()
+                result.update({"ROC AUC": roc_auc, "Accuracy": accuracy, "F1":f1})
                 return result
         
         def __str__(self):
