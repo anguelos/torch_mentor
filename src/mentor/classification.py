@@ -31,7 +31,7 @@ def create_classification_model(archname, n_classes, pretrained=True, freeze_lay
         net = net.to(device)
         net.status = (0, 0., 0.) # Epoch, Validation Error, Train Error
         if class_names == "":
-                net.class_names = tuple([f"cl_{n}" for n in range(n_classes)])
+                net.class_names = () #tuple([f"cl_{n}" for n in range(n_classes)])
         else:
                 class_names = tuple(class_names.split("\n"))
                 if len(net.class_names) != 0 and class_names != net.clas_names:
