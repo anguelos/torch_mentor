@@ -29,7 +29,7 @@ class TwoClassEvaluator():
 
         def reset(self):
                 self.y_true = []
-                self.y_score = []
+                self.y_pred = []
 
         def update(self, predictions, targets):
                 
