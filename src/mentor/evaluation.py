@@ -56,7 +56,7 @@ class TwoClassEvaluator():
                 f1 = (2*recall*precision)/(recall+precision)
 
                 #f1 = sklearn.metrics.f1_score(y_true=y_true, y_pred=y_score)
-                accuracy = ((y_pred>.5) == (y_true>.5)).totype("float").mean()
+                accuracy = ((y_pred>.5) == (y_true>.5)).astype("float").mean()
                 result.update({"ROC AUC": roc_auc, "Accuracy": accuracy, "F1":f1, "recall":recall, "precision":precision})
                 return result
         
