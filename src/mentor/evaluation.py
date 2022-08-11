@@ -21,7 +21,7 @@ class TormetingEvaluator():
 
 class TwoClassEvaluator():
         def __init__(self, loss_fn=None, roc_step=.01):
-                loss_fn = loss_fn
+                self.loss_fn = loss_fn
                 self.reset()
 
         def reset(self):
