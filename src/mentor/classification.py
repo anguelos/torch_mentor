@@ -37,7 +37,7 @@ def iterate_classification_epoch(net, dataloader, evaluator:TormetingEvaluator, 
                 progress_bar = tqdm.tqdm
         else:
                 progress_bar = lambda x:x
-        for inputs, targets in dataloader:
+        for inputs, targets in progress_bar(dataloader):
                 inputs, targets = inputs.to(device), targets.to(device)
                 if is_training:
                         optimizer.zero_grad()
