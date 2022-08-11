@@ -1,6 +1,7 @@
 import torchvision
 import torch
 from .evaluation import TormetingEvaluator
+import tqdm
 
 
 def create_classification_model(archname, n_classes, pretrained=True, freeze_layers_before=0, device="cuda"):
@@ -24,14 +25,18 @@ def create_classification_model(archname, n_classes, pretrained=True, freeze_lay
         return net
 
 
-def iterate_classification_epoch(net, dataloader, evaluator:TormetingEvaluator, loss_fn=None, optimizer=None, device="cuda"):
+def iterate_classification_epoch(net, dataloader, evaluator:TormetingEvaluator, loss_fn=None, optimizer=None, device="cuda", verbocity=1):
         is_training = optimizer is not None
         if is_training:
                 pass # TODO (anguelos) conditional context manager
-                net.training(False)
+                net.train(False)
         else:
                 net.train(True)
         evaluator.reset()
+        if verbocity > 0:
+                progress_bar = tqdm.tqdm
+        else:
+                progress_bar = lambda x:x
         for inputs, targets in dataloader:
                 inputs, targets = inputs.to(device), targets.to(device)
                 if is_training:
