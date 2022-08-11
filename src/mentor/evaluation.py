@@ -15,7 +15,7 @@ class TormetingEvaluator():
         def __str__(self):
                 raise NotImplementedError
 
-        def short_performance_string(self):
+        def single_metric(self):
                 raise NotImplementedError
 
 
@@ -50,6 +50,7 @@ class TwoClassEvaluator():
                 outputs = self.digest()
                 return repr(outputs)
 
-        def short_performance_string(self):
+        def single_metric(self):
+                self.digest()['Accuracy']
                 f"{(self.digest()['Accuracy']*100):6.2f}"
                 
