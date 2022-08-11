@@ -14,12 +14,13 @@ import sklearn
 
 #from types import SimpleNamespace
 #t_args = Union[SimpleNamespace, dict]
-from mentor import resume_classification, FolderClassificationDs, current_epoch, iterate_classification_epoch, TwoClassEvaluator
+from mentor import resume_classification, FolderClassificationDs, current_epoch, iterate_classification_epoch, TwoClassEvaluator, save
 
 
 
 if __name__=="__main__":
     p = {
+            "v":1,
             "ds_root":"./data/ingested",
             "ds_class_glob":"{ds_root}/*",
             "ds_img_glob":"{ds_root}/*/*",
@@ -55,6 +56,8 @@ if __name__=="__main__":
     print(f"Model Epoch {current_epoch(net)}")
     while current_epoch(net) < args.nb_epochs:
         if current_epoch(net) % args.validate_freq == 0:
-                iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(), device=args.device)
-        iterate_classification_epoch(net, train_dl, optimizer=optimizer, loss_fn=criterion, evaluator = TwoClassEvaluator(), device=args.device)
-    iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(), device=args.device)
+            iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(criterion), device=args.device)
+        iterate_classification_epoch(net, train_dl, optimizer=optimizer, loss_fn=criterion, evaluator = TwoClassEvaluator(criterion), device=args.device)
+        if current_epoch(net) % args.save_freq == 0:
+            save(args.resume_path, net)
+    iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(criterion), device=args.device)

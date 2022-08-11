@@ -8,7 +8,7 @@ def create_classification_model(archname, n_classes, pretrained=True, freeze_lay
         if archname.lower() == "resnet50":
                 net=torchvision.models.resnet50(pretrained=pretrained)
                 net.fc=torch.nn.Linear(in_features=2048, out_features=n_classes, bias=True)
-        elif archname.lower() == "modilenetv3":
+        elif archname.lower() == "mobilenetv3":
                 #len(list(net.parameters())) == 142
                 #len(list(net.classifier.parameters())) == 4
                 net = torchvision.models.mobilenet_v3_small(pretrained=pretrained)
@@ -30,14 +30,16 @@ def iterate_classification_epoch(net, dataloader, evaluator:TormetingEvaluator, 
         if is_training:
                 pass # TODO (anguelos) conditional context manager
                 net.train(False)
+                caption = f"Training"
         else:
                 net.train(True)
+                caption = f"Validating"
         evaluator.reset()
         if verbocity > 0:
                 progress_bar = tqdm.tqdm
         else:
-                progress_bar = lambda x:x
-        for inputs, targets in progress_bar(dataloader):
+                progress_bar = lambda x,y:x
+        for inputs, targets in progress_bar(dataloader, ):
                 inputs, targets = inputs.to(device), targets.to(device)
                 if is_training:
                         optimizer.zero_grad()
@@ -50,3 +52,4 @@ def iterate_classification_epoch(net, dataloader, evaluator:TormetingEvaluator, 
                 evaluator.update(predictions, targets)
         if is_training:
                 net["train_history"].append(evaluator.digest())
+

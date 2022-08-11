@@ -11,6 +11,12 @@ class TormetingEvaluator():
 
         def digest(self)->dict:
                 return {"Value":0.}
+        
+        def __str__(self):
+                raise NotImplementedError
+
+        def short_performance_string(self):
+                raise NotImplementedError
 
 
 class TwoClassEvaluator():
@@ -43,3 +49,7 @@ class TwoClassEvaluator():
         def __str__(self):
                 outputs = self.digest()
                 return repr(outputs)
+
+        def short_performance_string(self):
+                f"{(self.digest()['Accuracy']*100):6.2f}"
+                
