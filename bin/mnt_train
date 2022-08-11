@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+
+from copy import copy
+import fargv
+import torch
+import torchvision
+import glob
+import re
+from pathlib import Path
+from PIL import Image
+import sys
+from typing import Union
+import sklearn
+
+#from types import SimpleNamespace
+#t_args = Union[SimpleNamespace, dict]
+from mentor import resume_classification, FolderClassificationDs, current_epoch, iterate_classification_epoch, TwoClassEvaluator
+
+
+
+if __name__=="__main__":
+    p = {
+            "ds_root":"./data/ingested",
+            "ds_class_glob":"{ds_root}/*",
+            "ds_img_glob":"{ds_root}/*/*",
+            "lr":0.001,
+            "nb_epochs": 100,
+            "batch_sz": 10,
+            "input_size": "512",
+            "arch":("resnet50","mobilenetv3","resnet18"),
+            "n_classes": 2,
+            "pretrained": True,
+            "freeze_all_before":0,
+            "label":"exper",
+            "validate_freq": 1,
+            "save_freq": 1,
+            "num_workers": 0,
+            "resume_path":"./models/{arch}_{label}.pt",
+            "device":"cuda"
+    }
+
+    args, _ = fargv.fargv(p)
+    net = resume_classification(args, args.resume_path)
+    criterion = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(params=net.parameters(), lr=args.lr)
+    input_transform = torchvision.transforms.Compose([
+        torchvision.transforms.transforms.Resize(eval(args.input_size)),
+        torchvision.transforms.RandomCrop(eval(args.input_size), pad_if_needed=True),
+        torchvision.transforms.ToTensor(), 
+        torchvision.transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    train_ds = FolderClassificationDs(file_list=list(glob.glob(args.ds_img_glob)),filter_re="[0-9].*\....", input_transform=input_transform)
+    validate_ds = FolderClassificationDs(file_list=list(glob.glob(args.ds_img_glob)),filter_re="[a-f].*\....", input_transform=input_transform)
+    train_dl = torch.utils.data.DataLoader(train_ds, args.batch_sz, shuffle=True, num_workers=args.num_workers)
+    validate_dl = torch.utils.data.DataLoader(validate_ds, args.batch_sz, shuffle=True, num_workers=args.num_workers)
+    print(f"Model Epoch {current_epoch(net)}")
+    while current_epoch(net) < args.nb_epochs:
+        if current_epoch(net) % args.validate_freq == 0:
+                iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(), device=args.device)
+        iterate_classification_epoch(net, train_dl, optimizer=optimizer, loss_fn=criterion, evaluator = TwoClassEvaluator(), device=args.device)
+    iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(), device=args.device)
