@@ -41,7 +41,7 @@ if __name__=="__main__":
 
     args, _ = fargv.fargv(p)
     net = resume_classification(args, args.resume_path)
-    criterion = torch.nn.BCEWithLogitsLoss()
+    criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(params=net.parameters(), lr=args.lr)
     input_transform = torchvision.transforms.Compose([
         torchvision.transforms.transforms.Resize(eval(args.input_size)),
