@@ -20,6 +20,8 @@ if __name__=="__main__":
             "train_ds_img_glob":"{ds_root}/*/*",
             "val_ds_class_glob":"{train_ds_class_glob}",
             "val_ds_img_glob":"{train_ds_img_glob}",
+            "train_re":"[0-9].*\....",
+            "validation_re":"[a-f].*\....",
             "lr":0.001,
             "nb_epochs": 100,
             "batch_sz": 10,
@@ -46,9 +48,9 @@ if __name__=="__main__":
         torchvision.transforms.RandomCrop(eval(args.input_size), pad_if_needed=True),
         torchvision.transforms.ToTensor(), 
         torchvision.transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-    train_ds = FolderClassificationDs(file_list=list(glob.glob(args.train_ds_img_glob)),filter_re="[0-9].*\....", input_transform=input_transform)
+    train_ds = FolderClassificationDs(file_list=list(glob.glob(args.train_ds_img_glob)),filter_re=args.train_re, input_transform=input_transform)
     
-    validate_ds = FolderClassificationDs(file_list=list(glob.glob(args.val_ds_img_glob)),filter_re="[a-f].*\....", input_transform=input_transform)
+    validate_ds = FolderClassificationDs(file_list=list(glob.glob(args.val_ds_img_glob)),filter_re=args.validation_re, input_transform=input_transform)
     train_dl = torch.utils.data.DataLoader(train_ds, args.batch_sz, shuffle=True, num_workers=args.num_workers)
     validate_dl = torch.utils.data.DataLoader(validate_ds, args.batch_sz, shuffle=True, num_workers=args.num_workers)
     print(f"Loaded {args.resume_path} at epoch {current_epoch(net)}")
