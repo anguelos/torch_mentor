@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+
+
+from cProfile import label
+from matplotlib import pyplot as plt
+from mentor import *
+import torch
+import numpy as np
+import fargv
+
+
+def plot_history(net, var_names="Train/Accuracy/100,Validation/Accuracy/100", caption="", renamer={}):
+    rename = lambda x:renamer.get(x,x)
+    train_history, validation_history = net.train_history, net.validation_history
+    var_names = var_names.split(",")
+    if isinstance(train_history, list):
+        train_history = {n: v for n, v in enumerate(train_history)}
+    history = {"Train": train_history, "Validation":net.validation_history}
+    fig = plt.figure()
+    axes = fig.subplots() 
+    for var_name in var_names:
+        mode, variable, scaler = var_name.split("/")
+        scaler = eval(scaler)
+        xy = [(k,v[variable]) for k, v in sorted(history[mode].items())]
+        y = np.array([epoch[1] for epoch in xy])
+        x = np.array([epoch[0] for epoch in xy])
+        axes.plot(x, y*scaler, label=rename(var_name))
+    axes.legend()
+    if caption !="":
+        axes.set_title(rename(caption))
+    
+
+if __name__ == "__main__":
+    p={
+        "resume_path":"./models/resnet50_exper.pt",
+        "variables":"Train/Accuracy/100,Validation/Accuracy/100",
+        "caption": "Error rate over training", # TODO(anguelos) sort out the signs
+        "device": "cpu",
+        "output": "",
+    }
+    args, _ = fargv.fargv(p)
+    net = resume_classification(args.resume_path, args)
+    figure = plot_history(net,var_names=args.variables, caption="Training")
+    if args.output == "":
+        plt.show()
