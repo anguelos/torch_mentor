@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+
+from copy import copy
+import fargv
+import torch
+import torchvision
+import glob
+
+#from types import SimpleNamespace
+#t_args = Union[SimpleNamespace, dict]
+from mentor import resume_classification, FolderClassificationDs, current_epoch, iterate_classification_epoch, TwoClassEvaluator, save
+
+
+if __name__=="__main__":
+    p = {
+            "s":1, # sanity checking
+            "v":1, # verbocity
+            "class_names": "nonpapal,papal",
+            "train_re":"[0-9].*\....",
+            "validation_re":"[a-f].*\....",
+            "lr":0.001,
+            "nb_epochs": 100,
+            "batch_sz": 10,
+            "input_size": "32",
+            "arch":("resnet50","mobilenetv3","resnet18"),
+            "n_classes": 10,
+            "pretrained": True,
+            "freeze_all_before":0,
+            "label":"exper",
+            "validate_freq": 1,
+            "save_freq": 1,
+            "num_workers": 0,
+            "resume_path":"./models/{arch}_{label}.pt",
+            "device":"cuda"
+    }
+
+    args, _ = fargv.fargv(p)
+    
+    net = resume_classification(args.resume_path, args=args)
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(params=net.parameters(), lr=args.lr)
+    input_transform = torchvision.transforms.Compose([
+        torchvision.transforms.transforms.Resize(eval(args.input_size)),
+        torchvision.transforms.RandomCrop(eval(args.input_size), pad_if_needed=True),
+        torchvision.transforms.ToTensor(), 
+        torchvision.transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    train_ds = torchvision.datasets.CIFAR10(download=True, root="./data/cifar10",train=True, transform=input_transform)
+    validate_ds = torchvision.datasets.CIFAR10(download=True, root="./data/cifar10",train=False, transform=input_transform)
+    if args.n_classes < 10:
+        train_ds = [(img, cl) for img,cl in train_ds if cl<args.n_classes]
+        validate_ds = [(img, cl) for img,cl in validate_ds if cl<args.n_classes]
+    if args.v > 5:
+        print("\n\n")
+        train_ds.print_all()
+        print("\n\n")
+        validate_ds.print_all()
+        print("\n\n")
+    if args.s > 2:
+        overlap=train_ds.overlap(validate_ds)
+        print("\n".join([f"Overlaping {n}: {f}" for n, f in enumerate(overlap)]))
+        print(f"Overlaping {len(overlap)} TrainDS:{len(train_ds)} ValidateDS:{len(train_ds)} ")
+        assert not overlap
+    train_dl = torch.utils.data.DataLoader(train_ds, args.batch_sz, shuffle=True, num_workers=args.num_workers)
+    validate_dl = torch.utils.data.DataLoader(validate_ds, args.batch_sz, shuffle=True, num_workers=args.num_workers)
+    print(f"Loaded {args.resume_path} at epoch {current_epoch(net)}")
+    while current_epoch(net) < args.nb_epochs:
+        if current_epoch(net) % args.validate_freq == 0:
+            iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(criterion), device=args.device)
+        iterate_classification_epoch(net, train_dl, optimizer=optimizer, loss_fn=criterion, evaluator = TwoClassEvaluator(criterion), device=args.device)
+        if current_epoch(net) % args.save_freq == 0:
+            save(args.resume_path, net)
+    iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(criterion), device=args.device)

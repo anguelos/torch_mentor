@@ -9,7 +9,7 @@ import tqdm
 def render_status(net):
         epoch, val, train = net.status
         try:
-                result =  f"E:{epoch:5}, V:{val*100:6.2f}%, T:{train*100:6.2f}%"
+                result =  f"E:{epoch:5}, T:{val*100:6.2f}%, V:{train*100:6.2f}%"
         except:
                 result = "STATUS N/A"
         return result

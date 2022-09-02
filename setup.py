@@ -29,5 +29,5 @@ setup(
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Topic :: Scientific/Engineering"],
-    install_requires=["Pillow", "scikit-learn", "fargv", "tqdm", "pytorch", "torchvision"],
+    install_requires=["Pillow", "scikit-learn", "fargv", "tqdm", "pytorch", "torchvision","pytest"],
 )

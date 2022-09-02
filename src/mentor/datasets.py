@@ -37,6 +37,10 @@ class FolderClassificationDs:
                         self.input_transform = input_transform
                 if duplications!=(1,1):
                         raise NotImplementedError
+        def get_class_frequencies(self):
+                hist = torch.zeros(len(self.class_names))
+                torch.scatter_add(self.class_ids)
+
 
 
         def __getitem__(self, n:int) -> torch.Tensor:

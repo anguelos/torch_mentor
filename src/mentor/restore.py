@@ -14,14 +14,18 @@ def resume_classification(fname, args=None, device="", arch="", n_classes=0, pre
         if Path(fname).is_file():
                 save_dict = torch.load(open(fname,"rb"), map_location="cpu")
                 if save_dict["args_history"]:
-                        valid_args = copy(last(save_dict["args_history"]))
+                        args_dict = copy(last(save_dict["args_history"]))
                 else:
-                        valid_args = SimpleNamespace()
-                valid_args.__dict__.update(args.__dict__)
+                        args_dict = {} 
+                
+                #valid_args.__dict__.update(args.__dict__)
         else:
                 warn(f"could not load {fname}")
                 save_dict={}
-                valid_args = SimpleNamespace()
+                args_dict = {}
+                if args is not None:
+                        args_dict.update(args.__dict__)
+        valid_args = SimpleNamespace(**args_dict)
         if arch == "" and arch in valid_args.__dict__:
                 arch = valid_args.arch
         if arch == "":
@@ -33,6 +37,7 @@ def resume_classification(fname, args=None, device="", arch="", n_classes=0, pre
         if n_classes == 0 and "n_classes" in valid_args.__dict__:
                 n_classes = valid_args.n_classes
         if n_classes == 0:
+                print("n_classes 0:",valid_args)
                 n_classes = 2
         if pretrained == True and "pretrained" in valid_args.__dict__:
                 pretrained = valid_args.pretrained

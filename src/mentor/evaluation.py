@@ -22,7 +22,7 @@ class TormetingEvaluator():
                 raise NotImplementedError
 
 
-class TwoClassEvaluator():
+class TwoClassEvaluator(TormetingEvaluator):
         def __init__(self, loss_fn=None, roc_step=.01, epsilon=.000000001):
                 self.loss_fn = loss_fn
                 self.reset()
@@ -56,7 +56,7 @@ class TwoClassEvaluator():
                 fn = ((y_pred!=y_true) & (y_pred<.5)).astype(float).sum()
                 recall = tp /(self.epsilon + tp + tn)
                 precision = tp /(self.epsilon + tp + fp)
-                f1 = (2*recall*precision)/(recall+precision)
+                f1 = (2*recall*precision+self.epsilon)/(recall+precision+self.epsilon)
 
                 #f1 = sklearn.metrics.f1_score(y_true=y_true, y_pred=y_score)
                 accuracy = ((y_pred>.5) == (y_true>.5)).astype("float").mean()
@@ -76,5 +76,4 @@ class TwoClassEvaluator():
 
         def single_metric(self):
                 return self.digest()['Accuracy']
-                
                 

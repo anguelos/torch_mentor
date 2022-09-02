@@ -45,7 +45,7 @@ if __name__=="__main__":
         with torch.no_grad():
             input_batch_tensor = input_sample_tensor[None,:,:,:].to(args.device)
             outputs = net(input_batch_tensor)
-            _, amin = outputs.max(dim=1)
-            print(class_names[amin.cpu().numpy()])
+            _, amax = outputs.max(dim=1)
+            print(class_names[amax.cpu().numpy()])
 
         
