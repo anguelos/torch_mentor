@@ -13,18 +13,16 @@ def save(fname,net):
 def resume_classification(fname, args=None, device="", arch="", n_classes=0, pretrained=True, freeze_all_before=0):
         if Path(fname).is_file():
                 save_dict = torch.load(open(fname,"rb"), map_location="cpu")
+                args_dict = {} 
                 if save_dict["args_history"]:
-                        args_dict = copy(last(save_dict["args_history"]))
-                else:
-                        args_dict = {} 
-                
+                        args_dict.update(last(save_dict["args_history"]).__dict__)
                 #valid_args.__dict__.update(args.__dict__)
         else:
                 warn(f"could not load {fname}")
                 save_dict={}
                 args_dict = {}
                 if args is not None:
-                        args_dict.update(args.__dict__)
+                        args_dict.update(args.__dict__))
         valid_args = SimpleNamespace(**args_dict)
         if arch == "" and arch in valid_args.__dict__:
                 arch = valid_args.arch
