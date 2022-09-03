@@ -8,7 +8,7 @@ import glob
 
 #from types import SimpleNamespace
 #t_args = Union[SimpleNamespace, dict]
-from mentor import resume_classification, FolderClassificationDs, current_epoch, iterate_classification_epoch, TwoClassEvaluator, save
+from mentor import resume_classification, FolderClassificationDs, current_epoch, iterate_classification_epoch, ClassificationEvaluator, save
 
 
 if __name__=="__main__":
@@ -65,8 +65,8 @@ if __name__=="__main__":
     print(f"Loaded {args.resume_path} at epoch {current_epoch(net)}")
     while current_epoch(net) < args.nb_epochs:
         if current_epoch(net) % args.validate_freq == 0:
-            iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(criterion), device=args.device)
-        iterate_classification_epoch(net, train_dl, optimizer=optimizer, loss_fn=criterion, evaluator = TwoClassEvaluator(criterion), device=args.device)
+            iterate_classification_epoch(net, validate_dl, evaluator = ClassificationEvaluator(criterion), device=args.device)
+        iterate_classification_epoch(net, train_dl, optimizer=optimizer, loss_fn=criterion, evaluator = ClassificationEvaluator(criterion), device=args.device)
         if current_epoch(net) % args.save_freq == 0:
             save(args.resume_path, net)
-    iterate_classification_epoch(net, validate_dl, evaluator = TwoClassEvaluator(criterion), device=args.device)
+    iterate_classification_epoch(net, validate_dl, evaluator = ClassificationEvaluator(criterion), device=args.device)
