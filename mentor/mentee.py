@@ -542,7 +542,12 @@ class Mentee(nn.Module):
         ...     acc = (logits.argmax(1) == y.to(self.device)).float().mean().item()
         ...     return {"acc": acc}
         """
-        return self.training_step(sample, loss_fn)
+        result = self.training_step(sample, loss_fn)
+        # training_step returns (loss_tensor, metrics_dict); extract only metrics
+        if isinstance(result, tuple) and len(result) == 2:
+            _, metrics = result
+            return metrics
+        return result
 
     def preprocess(self, raw_input: Any) -> Any:
         """Transform a raw input into a model-ready tensor.
