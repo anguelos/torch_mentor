@@ -14,7 +14,10 @@
       "Bash(mtr_plot_file_hist -paths ./tmp/cifar_mentee.pt -paths ./tmp/cifar_mentee_128.pt -values train/loss -values validate/loss -overlay true -output ./docs/_static/plot_history_example.png -verbose true)",
       "Bash(mtr_plot_file_hist -paths ./tmp/cifar_mentee.pt ./tmp/cifar_mentee_128.pt -values train/loss validate/loss -overlay true -output ./docs/_static/plot_history_example.png -verbose true)",
       "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/unit_testing/test_reporting.py -q 2>&1)",
-      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/unit_testing/test_reporting.py -v)"
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/unit_testing/test_reporting.py -v)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/cli/test_entrypoints.py::test_report_file_no_path_exits_nonzero -q 2>&1)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/ -q --ignore=tests/cli)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/ --ignore=tests/cli)"
     ]
   }
 }

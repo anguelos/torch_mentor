@@ -147,14 +147,14 @@ def test_forward_raises():
         m(torch.tensor(1.0))
 
 
-def test_compute_sample_loss_raises():
+def test_training_step_raises():
     with pytest.raises(NotImplementedError):
-        MinimalMentee().compute_sample_loss(None)
+        MinimalMentee().training_step(None)
 
 
-def test_evaluate_sample_raises():
+def test_validation_step_raises():
     with pytest.raises(NotImplementedError):
-        MinimalMentee().evaluate_sample(None)
+        MinimalMentee().validation_step(None)
 
 
 def test_preprocess_raises():
@@ -264,7 +264,7 @@ def test_train_epoch_with_scheduler(lenet, train_loader):
 
 def test_train_epoch_memfail_raises(lenet, train_loader):
     class _MemfailMentee(LeNetMentee):
-        def compute_sample_loss(self, sample):
+        def training_step(self, sample):
             raise MemoryError("simulated OOM")
 
     m = _MemfailMentee()
@@ -277,7 +277,7 @@ def test_train_epoch_memfail_skip_counts(lenet, train_loader):
     call_count = {"n": 0}
 
     class _MemfailMentee(LeNetMentee):
-        def compute_sample_loss(self, sample):
+        def training_step(self, sample):
             call_count["n"] += 1
             raise MemoryError("simulated OOM")
 
@@ -351,7 +351,7 @@ def test_validate_epoch_stores_best_weights(trained_model):
 
 def test_validate_epoch_memfail_skip(lenet, train_loader, val_loader):
     class _MemfailMentee(LeNetMentee):
-        def evaluate_sample(self, sample):
+        def validation_step(self, sample):
             raise MemoryError("simulated OOM")
 
     m = _MemfailMentee()

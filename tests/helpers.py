@@ -49,14 +49,14 @@ class LeNetMentee(Mentee):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-    def compute_sample_loss(self, sample):
+    def training_step(self, sample):
         x, y = sample
         x, y = x.to(self.device), y.to(self.device)
         logits = self(x)
         loss = F.cross_entropy(logits, y)
         return loss, {"loss": loss.item(), "acc": (logits.argmax(1) == y).float().mean().item()}
 
-    def evaluate_sample(self, sample):
+    def validation_step(self, sample):
         x, y = sample
         x, y = x.to(self.device), y.to(self.device)
         logits = self(x)

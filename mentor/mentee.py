@@ -126,7 +126,7 @@ class Mentee(nn.Module):
     file.
 
     Subclass :class:`Mentee` and implement at minimum :meth:`forward`,
-    :meth:`compute_sample_loss`, and :meth:`evaluate_sample`.  All other
+    :meth:`training_step`, and :meth:`validation_step`.  All other
     methods have working defaults or raise :exc:`NotImplementedError` with
     informative messages.
 
@@ -144,11 +144,11 @@ class Mentee(nn.Module):
     ...         self.fc = torch.nn.Linear(128, num_classes)
     ...     def forward(self, x):
     ...         return self.fc(x)
-    ...     def compute_sample_loss(self, sample):
+    ...     def training_step(self, sample):
     ...         x, y = sample
     ...         loss = torch.nn.functional.cross_entropy(self(x), y)
     ...         return loss, {"loss": loss.item()}
-    ...     def evaluate_sample(self, sample):
+    ...     def validation_step(self, sample):
     ...         x, y = sample
     ...         acc = (self(x).argmax(1) == y).float().mean().item()
     ...         return {"acc": acc}
@@ -307,7 +307,7 @@ class Mentee(nn.Module):
         """
         raise NotImplementedError
 
-    def compute_sample_loss(self, sample: Any) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def training_step(self, sample: Any) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Compute the loss for a single training sample or mini-batch.
 
         Called inside :meth:`train_epoch`.  The returned tensor must be
@@ -334,14 +334,14 @@ class Mentee(nn.Module):
 
         Examples
         --------
-        >>> def compute_sample_loss(self, sample):
+        >>> def training_step(self, sample):
         ...     x, y = sample
         ...     loss = F.cross_entropy(self(x.to(self.device)), y.to(self.device))
         ...     return loss, {"loss": loss.item()}
         """
         raise NotImplementedError
 
-    def evaluate_sample(self, sample: Any) -> Dict[str, float]:
+    def validation_step(self, sample: Any) -> Dict[str, float]:
         """Evaluate the model on a single validation sample or mini-batch.
 
         Called inside :meth:`validate_epoch` under ``torch.no_grad()``.
@@ -365,7 +365,7 @@ class Mentee(nn.Module):
 
         Examples
         --------
-        >>> def evaluate_sample(self, sample):
+        >>> def validation_step(self, sample):
         ...     x, y = sample
         ...     logits = self(x.to(self.device))
         ...     acc = (logits.argmax(1) == y.to(self.device)).float().mean().item()
@@ -529,7 +529,7 @@ class Mentee(nn.Module):
     ) -> Dict[str, float]:
         """Train the model for one full epoch.
 
-        Iterates over *dataset*, calls :meth:`compute_sample_loss` for each
+        Iterates over *dataset*, calls :meth:`training_step` for each
         sample, and accumulates gradients for *pseudo_batch_size* samples
         before calling ``optimizer.step()``.  Appends the epoch metrics to
         :attr:`_train_history`, incrementing :attr:`current_epoch`.
@@ -548,7 +548,7 @@ class Mentee(nn.Module):
             each ``optimizer.step()``.  Allows large effective batch sizes
             without increasing memory.  Default is ``1``.
         memfail : {'raise', 'skip'}, optional
-            Policy when :meth:`compute_sample_loss` raises
+            Policy when :meth:`training_step` raises
             :exc:`MemoryError`.  ``'raise'`` propagates immediately;
             ``'skip'`` counts the failure and continues.  Default is
             ``'raise'``.
@@ -586,7 +586,7 @@ class Mentee(nn.Module):
         pbar = tqdm(dataset, desc=f"train epoch {self.current_epoch + 1}", disable=not verbose)
         for idx, sample in enumerate(pbar):
             try:
-                loss, sample_metrics = self.compute_sample_loss(sample)
+                loss, sample_metrics = self.training_step(sample)
                 for k, v in sample_metrics.items():
                     accumulated_metrics[k] = accumulated_metrics.get(k, 0.0) + v
                 sample_count += 1
@@ -670,7 +670,7 @@ class Mentee(nn.Module):
             Force re-evaluation even if this epoch was already validated.
             Default is ``False``.
         memfail : {'raise', 'skip'}, optional
-            Policy for :exc:`MemoryError` inside :meth:`evaluate_sample`.
+            Policy for :exc:`MemoryError` inside :meth:`validation_step`.
             Default is ``'raise'``.
         tensorboard_writer : torch.utils.tensorboard.SummaryWriter, optional
             If provided, metrics are logged under ``val/<metric>``.
@@ -708,7 +708,7 @@ class Mentee(nn.Module):
         with torch.no_grad():
             for idx, sample in enumerate(pbar):
                 try:
-                    sample_metrics = self.evaluate_sample(sample)
+                    sample_metrics = self.validation_step(sample)
                     for k, v in sample_metrics.items():
                         accumulated_metrics[k] = accumulated_metrics.get(k, 0.0) + v
                     sample_count += 1

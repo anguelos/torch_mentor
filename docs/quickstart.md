@@ -18,8 +18,8 @@ pip install -e .
 
 Every model is a subclass of {class}`~mentor.Mentee`.  At minimum you must
 implement {meth}`~mentor.Mentee.forward`,
-{meth}`~mentor.Mentee.compute_sample_loss`, and
-{meth}`~mentor.Mentee.evaluate_sample`.
+{meth}`~mentor.Mentee.training_step`, and
+{meth}`~mentor.Mentee.validation_step`.
 
 ```python
 import torch
@@ -35,13 +35,13 @@ class MyClassifier(Mentee):
     def forward(self, x):
         return self.fc(x)
 
-    def compute_sample_loss(self, batch):
+    def training_step(self, batch):
         x, y = batch
         x, y = x.to(self.device), y.to(self.device)
         loss = F.cross_entropy(self(x), y)
         return loss, {"loss": loss.item()}
 
-    def evaluate_sample(self, batch):
+    def validation_step(self, batch):
         x, y = batch
         x, y = x.to(self.device), y.to(self.device)
         acc = (self(x).argmax(1) == y).float().mean().item()

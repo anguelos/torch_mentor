@@ -64,11 +64,11 @@ class CifarResNet(Mentee):
         acc = float(logits.argmax(1).eq(y).float().mean())
         return loss, {"accuracy": acc, "loss": loss.item()}
 
-    def compute_sample_loss(self, sample):
+    def training_step(self, sample):
         loss, metrics = self._infer(sample)
         return loss, metrics
 
-    def evaluate_sample(self, sample):
+    def validation_step(self, sample):
         _, metrics = self._infer(sample)
         return metrics
 

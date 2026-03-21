@@ -1,5 +1,22 @@
 # mentor
 
+[![License](https://img.shields.io/github/license/anguelos/mentor)](https://github.com/anguelos/mentor/blob/main/LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/anguelos/mentor/releases)
+[![Python](https://img.shields.io/badge/python-3.7%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D1.9-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Last commit](https://img.shields.io/github/last-commit/anguelos/mentor)](https://github.com/anguelos/mentor/commits/main)
+[![Open issues](https://img.shields.io/github/issues/anguelos/mentor)](https://github.com/anguelos/mentor/issues)
+[![Open PRs](https://img.shields.io/github/issues-pr/anguelos/mentor)](https://github.com/anguelos/mentor/pulls)
+[![Repo size](https://img.shields.io/github/repo-size/anguelos/mentor)](https://github.com/anguelos/mentor)
+[![Stars](https://img.shields.io/github/stars/anguelos/mentor?style=social)](https://github.com/anguelos/mentor/stargazers)
+[![Forks](https://img.shields.io/github/forks/anguelos/mentor?style=social)](https://github.com/anguelos/mentor/forks)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000)](https://github.com/psf/black)
+[![Linting: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Type checking: mypy](https://img.shields.io/badge/type%20checking-mypy-2A6DB2)](https://mypy-lang.org/)
+[![Tests: pytest](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)](https://docs.pytest.org/)
+[![Docs: Sphinx RTD](https://img.shields.io/badge/docs-Sphinx%20RTD-blue?logo=sphinx)](https://mentor.readthedocs.io)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)](https://github.com/anguelos/mentor)
+
 A lightweight PyTorch training framework built around a single idea: **a model should carry its own training history**.
 
 `Mentee` is a `torch.nn.Module` subclass that transparently records every epoch of training, validation metrics, software environment, and command-line invocation — all saved into a single `.pt` checkpoint.  Resuming on a different machine, reporting on a run, or rolling back to the best epoch requires no extra bookkeeping.
@@ -37,14 +54,14 @@ class MyNet(Mentee):
     def forward(self, x):
         return self.fc(x.flatten(1))
 
-    def compute_sample_loss(self, sample):
+    def training_step(self, sample):
         x, y = sample
         logits = self(x.to(self.device))
         loss = F.cross_entropy(logits, y.to(self.device))
         acc = float(logits.argmax(1).eq(y.to(self.device)).float().mean())
         return loss, {"accuracy": acc, "loss": loss.item()}
 
-    def evaluate_sample(self, sample):
+    def validation_step(self, sample):
         x, y = sample
         logits = self(x.to(self.device))
         acc = float(logits.argmax(1).eq(y.to(self.device)).float().mean())
@@ -107,8 +124,8 @@ model.device          # torch.device — inferred from parameters
 ### Core methods to implement in your subclass
 
 ```python
-def compute_sample_loss(self, sample) -> tuple[Tensor, dict[str, float]]: ...
-def evaluate_sample(self, sample)    -> dict[str, float]: ...
+def training_step(self, sample) -> tuple[Tensor, dict[str, float]]: ...
+def validation_step(self, sample)    -> dict[str, float]: ...
 ```
 
 The **first key** of the returned dict is the *principal metric* used for best-checkpoint selection.
