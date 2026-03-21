@@ -18,7 +18,10 @@
       "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/cli/test_entrypoints.py::test_report_file_no_path_exits_nonzero -q 2>&1)",
       "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/ -q --ignore=tests/cli)",
       "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/ --ignore=tests/cli)",
-      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/ --ignore=tests/cli -q)"
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/ --ignore=tests/cli -q)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/unit_testing/test_mentee.py -v)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/unit_testing/test_mentee.py::test_multilevel_explicit_base_limits_capture -v)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/unit_testing/test_mentee.py::test_multilevel_explicit_base_limits_capture -v -s)"
     ]
   }
 }

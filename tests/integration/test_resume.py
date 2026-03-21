@@ -83,7 +83,9 @@ def test_training_after_resume_changes_weights(trained_model):
 
 def test_inference_state_preserved_through_resume_training(lenet, train_loader):
     lenet.register_inference_state("classes", list(range(10)))
-    opt, sched = lenet.create_train_objects()
+    _to = lenet.create_train_objects()
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     lenet.train_epoch(train_loader, opt, sched)
     buf = _buf_from(lenet, opt, sched)
     loaded, _, _ = Mentee.resume_training(buf, model_class=LeNetMentee)
@@ -96,7 +98,9 @@ def test_inference_state_preserved_through_resume_training(lenet, train_loader):
 
 def test_three_sequential_resumes(lenet):
     loader = make_loader(n_samples=16, batch_size=8)
-    opt, sched = lenet.create_train_objects()
+    _to = lenet.create_train_objects()
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     for epoch in range(3):
         lenet.train_epoch(loader, opt, sched)
         buf = _buf_from(lenet, opt, sched)

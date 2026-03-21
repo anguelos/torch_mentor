@@ -52,7 +52,9 @@ class MyClassifier(Mentee):
 
 ```python
 model = MyClassifier(num_classes=10)
-opt, sched = model.create_train_objects(lr=1e-3)
+_to = model.create_train_objects(lr=1e-3)
+
+opt, sched = _to["optimizer"], _to["lr_scheduler"]
 
 for epoch in range(20):
     train_metrics = model.train_epoch(train_loader, opt, sched, verbose=True)

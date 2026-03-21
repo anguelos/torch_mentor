@@ -69,7 +69,9 @@ cuda_required = pytest.mark.skipif(
 @cuda_required
 def test_save_on_gpu_loads_on_cpu(lenet, train_loader, val_loader):
     lenet = lenet.cuda()
-    opt, sched = lenet.create_train_objects(lr=1e-3)
+    _to = lenet.create_train_objects(lr=1e-3)
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     lenet.train_epoch(train_loader, opt, sched)
     lenet.validate_epoch(val_loader)
     buf = io.BytesIO()
@@ -82,7 +84,9 @@ def test_save_on_gpu_loads_on_cpu(lenet, train_loader, val_loader):
 
 @cuda_required
 def test_resume_training_to_gpu(lenet, train_loader, val_loader):
-    opt, sched = lenet.create_train_objects()
+    _to = lenet.create_train_objects()
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     lenet.train_epoch(train_loader, opt, sched)
     buf = io.BytesIO()
     lenet.save(buf)
@@ -94,7 +98,9 @@ def test_resume_training_to_gpu(lenet, train_loader, val_loader):
 @cuda_required
 def test_resume_training_optimizer_on_gpu(lenet, train_loader, val_loader):
     """Optimizer state tensors should be moved to the requested device."""
-    opt, sched = lenet.create_train_objects()
+    _to = lenet.create_train_objects()
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     lenet.train_epoch(train_loader, opt, sched)
     buf = io.BytesIO()
     lenet.save(buf, optimizer=opt)

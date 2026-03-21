@@ -75,7 +75,8 @@ from torch.utils.data import DataLoader
 
 model = MyNet(num_classes=10)
 model.to("cuda")
-optimizer, scheduler = model.create_train_objects(lr=1e-3)
+train_objs = model.create_train_objects(lr=1e-3)
+optimizer, scheduler = train_objs["optimizer"], train_objs["lr_scheduler"]
 
 train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
 val_loader   = DataLoader(val_set,   batch_size=32)
@@ -134,7 +135,7 @@ The **first key** of the returned dict is the *principal metric* used for best-c
 
 ```python
 model.create_train_objects(lr=1e-3, step_size=10, gamma=0.1)
-# -> (Adam optimizer, StepLR scheduler)
+# -> {"optimizer": Adam, "lr_scheduler": StepLR, "loss_fn": <fn or None>}
 
 model.train_epoch(dataset, optimizer,
                   lr_scheduler=None, pseudo_batch_size=1,

@@ -45,7 +45,7 @@ def test_current_epoch_starts_at_zero():
 
 
 def test_current_epoch_increments_with_history(lenet, train_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     assert lenet.current_epoch == 0
     lenet.train_epoch(train_loader, opt)
     assert lenet.current_epoch == 1
@@ -190,25 +190,25 @@ def test_subclass_get_preprocessing_info(lenet):
 # create_train_objects
 # ---------------------------------------------------------------------------
 
-def test_create_train_objects_returns_two_items(lenet):
+def test_create_train_objects_returns_dict_with_required_keys(lenet):
     result = lenet.create_train_objects()
-    assert len(result) == 2
+    assert set(result.keys()) >= {"optimizer", "lr_scheduler", "loss_fn"}
 
 
 def test_create_train_objects_optimizer_type(lenet):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     assert isinstance(opt, torch.optim.Optimizer)
 
 
 def test_create_train_objects_scheduler_type(lenet):
-    _, sched = lenet.create_train_objects()
+    sched = lenet.create_train_objects()["lr_scheduler"]
     base_cls = getattr(torch.optim.lr_scheduler, "LRScheduler",
                    torch.optim.lr_scheduler._LRScheduler)
     assert isinstance(sched, base_cls)
 
 
 def test_create_train_objects_custom_lr(lenet):
-    opt, _ = lenet.create_train_objects(lr=1e-4)
+    opt = lenet.create_train_objects(lr=1e-4)["optimizer"]
     lr = opt.param_groups[0]["lr"]
     assert abs(lr - 1e-4) < 1e-9
 
@@ -218,7 +218,7 @@ def test_create_train_objects_custom_lr(lenet):
 # ---------------------------------------------------------------------------
 
 def test_train_epoch_increments_current_epoch(lenet, train_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     assert lenet.current_epoch == 0
     lenet.train_epoch(train_loader, opt)
     assert lenet.current_epoch == 1
@@ -227,13 +227,13 @@ def test_train_epoch_increments_current_epoch(lenet, train_loader):
 
 
 def test_train_epoch_returns_dict(lenet, train_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     metrics = lenet.train_epoch(train_loader, opt)
     assert isinstance(metrics, dict)
 
 
 def test_train_epoch_contains_expected_keys(lenet, train_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     metrics = lenet.train_epoch(train_loader, opt)
     assert "loss" in metrics
     assert "acc" in metrics
@@ -241,13 +241,13 @@ def test_train_epoch_contains_expected_keys(lenet, train_loader):
 
 
 def test_train_epoch_memfails_zero_on_success(lenet, train_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     metrics = lenet.train_epoch(train_loader, opt)
     assert metrics["memfails"] == 0.0
 
 
 def test_train_epoch_appends_to_history(lenet, train_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     lenet.train_epoch(train_loader, opt)
     assert len(lenet._train_history) == 1
     lenet.train_epoch(train_loader, opt)
@@ -255,7 +255,9 @@ def test_train_epoch_appends_to_history(lenet, train_loader):
 
 
 def test_train_epoch_with_scheduler(lenet, train_loader):
-    opt, sched = lenet.create_train_objects()
+    _to = lenet.create_train_objects()
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     lr_before = opt.param_groups[0]["lr"]
     lenet.train_epoch(train_loader, opt, lr_scheduler=sched)
     # StepLR with step_size=10 won't drop at epoch 1, but should not crash
@@ -268,7 +270,7 @@ def test_train_epoch_memfail_raises(lenet, train_loader):
             raise MemoryError("simulated OOM")
 
     m = _MemfailMentee()
-    opt, _ = m.create_train_objects()
+    opt = m.create_train_objects()["optimizer"]
     with pytest.raises(MemoryError):
         m.train_epoch(train_loader, opt, memfail="raise")
 
@@ -282,7 +284,7 @@ def test_train_epoch_memfail_skip_counts(lenet, train_loader):
             raise MemoryError("simulated OOM")
 
     m = _MemfailMentee()
-    opt, _ = m.create_train_objects()
+    opt = m.create_train_objects()["optimizer"]
     metrics = m.train_epoch(train_loader, opt, memfail="skip")
     n_batches = len(train_loader)
     assert metrics["memfails"] == float(n_batches)
@@ -290,13 +292,13 @@ def test_train_epoch_memfail_skip_counts(lenet, train_loader):
 
 def test_train_epoch_pseudo_batch_size(lenet, train_loader):
     """pseudo_batch_size > 1 should not crash and should still complete."""
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     metrics = lenet.train_epoch(train_loader, opt, pseudo_batch_size=4)
     assert "loss" in metrics
 
 
 def test_train_epoch_records_software_history(lenet, train_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     lenet.train_epoch(train_loader, opt)
     assert len(lenet._software_history) >= 1
 
@@ -306,21 +308,21 @@ def test_train_epoch_records_software_history(lenet, train_loader):
 # ---------------------------------------------------------------------------
 
 def test_validate_epoch_returns_dict(lenet, train_loader, val_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     lenet.train_epoch(train_loader, opt)
     metrics = lenet.validate_epoch(val_loader)
     assert isinstance(metrics, dict)
 
 
 def test_validate_epoch_contains_acc(lenet, train_loader, val_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     lenet.train_epoch(train_loader, opt)
     metrics = lenet.validate_epoch(val_loader)
     assert "acc" in metrics
 
 
 def test_validate_epoch_caches_result(lenet, train_loader, val_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     lenet.train_epoch(train_loader, opt)
     first  = lenet.validate_epoch(val_loader)
     second = lenet.validate_epoch(val_loader)
@@ -328,7 +330,7 @@ def test_validate_epoch_caches_result(lenet, train_loader, val_loader):
 
 
 def test_validate_epoch_recalculate_reruns(lenet, train_loader, val_loader):
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     lenet.train_epoch(train_loader, opt)
     first  = lenet.validate_epoch(val_loader)
     second = lenet.validate_epoch(val_loader, recalculate=True)
@@ -355,7 +357,7 @@ def test_validate_epoch_memfail_skip(lenet, train_loader, val_loader):
             raise MemoryError("simulated OOM")
 
     m = _MemfailMentee()
-    opt, _ = m.create_train_objects()
+    opt = m.create_train_objects()["optimizer"]
     m.train_epoch(train_loader, opt)
     metrics = m.validate_epoch(val_loader, memfail="skip")
     n_batches = len(val_loader)
@@ -531,3 +533,348 @@ def test_get_software_snapshot_keys():
     snap = _get_software_snapshot()
     for key in ("python", "torch", "hostname", "user", "git_hash"):
         assert key in snap
+
+
+# ---------------------------------------------------------------------------
+# __init__ constructor_params capture — implicit vs explicit
+# ---------------------------------------------------------------------------
+#
+# Design: Mentee.__init__ ALWAYS walks the call stack to find the topmost
+# __init__ frame operating on the same object.  That frame belongs to
+# type(self) and its locals are the authoritative constructor_params.
+# Explicit kwargs passed to super().__init__() are only used as a fallback
+# when no __init__ frame is found (factory function, module-level call).
+#
+# Consequences:
+#   - Implicit (super().__init__()) and explicit (super().__init__(**kw))
+#     produce identical results when the explicit values equal the received args.
+#   - If explicit passes a *transformed* value, the frame's original wins.
+#   - An intermediate base using explicit passing never prevents the walk from
+#     reaching the concrete class's __init__.
+# ---------------------------------------------------------------------------
+
+# --- helpers local to this section -----------------------------------------
+
+class _ImplicitSingle(Mentee):
+    """Single-level: calls super().__init__() with no arguments."""
+    def __init__(self, num_classes=10, dropout=0.5):
+        super().__init__()
+        self.param = nn.Parameter(torch.zeros(num_classes))
+
+
+class _ImplicitNoParams(Mentee):
+    """Implicit capture with no parameters — should produce empty dict."""
+    def __init__(self):
+        super().__init__()
+        self.param = nn.Parameter(torch.zeros(1))
+
+
+class _ImplicitWithStarKwargs(Mentee):
+    """Implicit capture when child accepts **kwargs."""
+    def __init__(self, num_classes=10, **extra):
+        super().__init__()
+        self.param = nn.Parameter(torch.zeros(num_classes))
+
+
+class _ExplicitSingle(Mentee):
+    """Explicit: passes identical kwargs to super() — result equals implicit."""
+    def __init__(self, num_classes=10, dropout=0.5):
+        super().__init__(num_classes=num_classes, dropout=dropout)
+        self.param = nn.Parameter(torch.zeros(num_classes))
+
+
+class _ExplicitTransformed(Mentee):
+    """Passes a *transformed* value explicitly to super().__init__.
+    The walk reaches this frame and captures the original received value,
+    not the transformed one — proving the frame always wins."""
+    def __init__(self, num_classes=10):
+        super().__init__(num_classes=num_classes * 2)   # explicit: transformed
+        self.param = nn.Parameter(torch.zeros(num_classes))
+
+
+class _MultiBase(Mentee):
+    """Base in a multi-level implicit chain."""
+    def __init__(self, a=1):
+        super().__init__()
+        self.param = nn.Parameter(torch.zeros(a))
+
+
+class _MultiChild(_MultiBase):
+    """Child adds parameter b — should be captured along with a."""
+    def __init__(self, a=1, b=2):
+        super().__init__()
+
+
+class _MultiGrandchild(_MultiChild):
+    """Three-level chain — all three params should be captured."""
+    def __init__(self, a=1, b=2, c=3):
+        super().__init__()
+
+
+class _BaseExplicit(Mentee):
+    """Intermediate base that uses explicit passing to Mentee.__init__.
+    The walk still continues past this frame to reach the concrete child."""
+    def __init__(self, a=1):
+        super().__init__(a=a)           # explicit — but walk still runs upward
+        self.param = nn.Parameter(torch.zeros(a))
+
+
+class _ChildOverExplicitBase(_BaseExplicit):
+    """Concrete child over a base that uses explicit passing.
+    Because the walk always runs, Child's full params {a, b} are captured
+    even though Base calls super().__init__(a=a) explicitly."""
+    def __init__(self, a=1, b=2):
+        super().__init__()
+
+
+# --- single-level implicit --------------------------------------------------
+
+def test_implicit_capture_non_default_values():
+    m = _ImplicitSingle(num_classes=7, dropout=0.3)
+    assert m._constructor_params == {"num_classes": 7, "dropout": 0.3}
+
+
+def test_implicit_capture_default_values_recorded():
+    """Default values are captured, not just the ones explicitly overridden."""
+    m = _ImplicitSingle(num_classes=7)          # dropout stays at default 0.5
+    assert m._constructor_params["dropout"] == 0.5
+
+
+def test_implicit_capture_all_defaults():
+    """All-default instantiation still populates constructor_params fully."""
+    m = _ImplicitSingle()
+    assert m._constructor_params == {"num_classes": 10, "dropout": 0.5}
+
+
+def test_implicit_capture_no_params_gives_empty_dict():
+    """__init__ with no parameters beyond self → empty dict, no crash."""
+    m = _ImplicitNoParams()
+    assert m._constructor_params == {}
+
+
+def test_implicit_capture_star_kwargs_included():
+    """Extra **kwargs passed by the caller are captured alongside named args."""
+    m = _ImplicitWithStarKwargs(num_classes=3, foo="bar", baz=42)
+    assert m._constructor_params["num_classes"] == 3
+    assert m._constructor_params["foo"] == "bar"
+    assert m._constructor_params["baz"] == 42
+
+
+def test_implicit_capture_star_kwargs_empty():
+    """When no **kwargs are passed, only the named params appear."""
+    m = _ImplicitWithStarKwargs(num_classes=3)
+    assert m._constructor_params == {"num_classes": 3}
+
+
+# --- explicit passing — frame still wins ------------------------------------
+
+def test_explicit_and_implicit_produce_same_params():
+    """Explicit passing and implicit capture agree when values are not transformed."""
+    implicit = _ImplicitSingle(num_classes=5, dropout=0.2)
+    explicit = _ExplicitSingle(num_classes=5, dropout=0.2)
+    assert implicit._constructor_params == explicit._constructor_params
+
+
+def test_explicit_capture_stores_correct_params():
+    """Explicit class stores the args it received, verified via frame walk."""
+    m = _ExplicitSingle(num_classes=4, dropout=0.1)
+    assert m._constructor_params == {"num_classes": 4, "dropout": 0.1}
+
+
+def test_frame_wins_over_transformed_explicit_value():
+    """When super().__init__() is called with a transformed value, the frame
+    captures the *original* received argument — not the transformed one.
+    This is the correct behaviour for resume(): the original arg is what
+    is needed to re-instantiate the model."""
+    m = _ExplicitTransformed(num_classes=5)
+    # Frame has num_classes=5; explicit passed num_classes=10 (5*2)
+    assert m._constructor_params == {"num_classes": 5}
+
+
+def test_walk_runs_even_when_explicit_kwargs_provided():
+    """The walk always runs regardless of whether explicit kwargs were passed.
+    Proved by the fact that _ExplicitTransformed(num_classes=5) stores 5,
+    not the explicitly-passed 10."""
+    m = _ExplicitTransformed(num_classes=3)
+    assert m._constructor_params["num_classes"] == 3   # frame value, not 6
+
+
+# --- explicit kwargs as fallback outside __init__ ---------------------------
+
+def test_explicit_kwargs_kept_as_fallback_outside_init():
+    """When Mentee.__init__ is called from a plain function (no __init__ frame),
+    the walk finds nothing and explicit kwargs are kept as-is."""
+    def factory():
+        m = _ImplicitSingle.__new__(_ImplicitSingle)
+        Mentee.__init__(m, num_classes=42, dropout=0.77)
+        return m
+    m = factory()
+    assert m._constructor_params == {"num_classes": 42, "dropout": 0.77}
+
+
+def test_explicit_empty_kwargs_outside_init_gives_empty_dict():
+    """Factory call with no explicit kwargs and no __init__ frame → empty dict."""
+    def factory():
+        m = _ImplicitNoParams.__new__(_ImplicitNoParams)
+        Mentee.__init__(m)
+        return m
+    m = factory()
+    assert m._constructor_params == {}
+
+
+# --- guard: type(self) is Mentee -------------------------------------------
+
+def test_direct_mentee_instantiation_gives_empty_params():
+    """Mentee itself (not a subclass) instantiated directly: type guard fires,
+    walk result is discarded, constructor_params stays empty."""
+    class _Unrelated:
+        def __init__(self):
+            self.x = 99
+            self.m = Mentee.__new__(Mentee)
+            Mentee.__init__(self.m)     # type(self.m) is Mentee → guard fires
+    u = _Unrelated()
+    assert u.m._constructor_params == {}
+
+
+# --- guard: caller is not __init__ -----------------------------------------
+
+def test_implicit_gives_empty_when_called_outside_init():
+    """Mentee.__init__ called from a plain function with no explicit kwargs
+    finds no __init__ frame → empty dict."""
+    def factory():
+        m = _ImplicitNoParams.__new__(_ImplicitNoParams)
+        Mentee.__init__(m)
+        return m
+    assert factory()._constructor_params == {}
+
+
+# --- guard: different self in calling frame ---------------------------------
+
+def test_walk_stops_at_frame_with_different_self():
+    """The walk stops as soon as self doesn't match — construction happening
+    inside another object's __init__ does not contaminate the capture."""
+    class _Outer:
+        def __init__(self):
+            self.inner = _ImplicitSingle(num_classes=3, dropout=0.1)
+
+    outer = _Outer()
+    assert outer.inner._constructor_params == {"num_classes": 3, "dropout": 0.1}
+
+
+def test_walk_does_not_capture_outer_init_locals():
+    """Outer.__init__ locals (e.g. self.x = 99) must not appear in the
+    inner Mentee's constructor_params."""
+    captured = {}
+
+    class _Outer:
+        def __init__(self):
+            secret = 12345          # local in outer __init__
+            self.inner = _ImplicitSingle(num_classes=2, dropout=0.0)
+            captured.update(self.inner._constructor_params)
+
+    _Outer()
+    assert "secret" not in captured
+
+
+# --- guard: currentframe() returns None ------------------------------------
+
+def test_implicit_falls_back_when_currentframe_is_none(monkeypatch):
+    """On runtimes where inspect.currentframe() returns None the path
+    degrades gracefully: no frame found, explicit kwargs (empty) are kept."""
+    import inspect as _inspect
+    monkeypatch.setattr(_inspect, "currentframe", lambda: None)
+    m = _ImplicitSingle(num_classes=5, dropout=0.25)
+    assert m._constructor_params == {}
+
+
+def test_explicit_kwargs_kept_when_currentframe_is_none(monkeypatch):
+    """When currentframe() is None and explicit kwargs were provided,
+    those explicit kwargs are preserved as the fallback."""
+    import inspect as _inspect
+    monkeypatch.setattr(_inspect, "currentframe", lambda: None)
+
+    def factory():
+        m = _ImplicitSingle.__new__(_ImplicitSingle)
+        Mentee.__init__(m, num_classes=7, dropout=0.3)
+        return m
+
+    m = factory()
+    assert m._constructor_params == {"num_classes": 7, "dropout": 0.3}
+
+
+# --- multi-level inheritance -----------------------------------------------
+
+def test_multilevel_two_levels_captures_child_params():
+    """Walk reaches Child.__init__ — both a and b are captured."""
+    c = _MultiChild(a=3, b=9)
+    assert c._constructor_params == {"a": 3, "b": 9}
+
+
+def test_multilevel_two_levels_all_defaults():
+    """All-default multi-level instantiation captures the concrete class params."""
+    c = _MultiChild()
+    assert c._constructor_params == {"a": 1, "b": 2}
+
+
+def test_multilevel_three_levels_captures_grandchild_params():
+    """Three-level chain: grandchild params win over base and mid params."""
+    g = _MultiGrandchild(a=10, b=20, c=30)
+    assert g._constructor_params == {"a": 10, "b": 20, "c": 30}
+
+
+def test_multilevel_three_levels_all_defaults():
+    g = _MultiGrandchild()
+    assert g._constructor_params == {"a": 1, "b": 2, "c": 3}
+
+
+def test_multilevel_explicit_base_does_not_limit_capture():
+    """Even when an intermediate base passes explicit kwargs to Mentee.__init__,
+    the walk continues and reaches the concrete child's __init__."""
+    m = _ChildOverExplicitBase(a=5, b=99)
+    assert m._constructor_params == {"a": 5, "b": 99}
+
+
+def test_multilevel_explicit_base_default_values():
+    """All-default case for the explicit-base chain."""
+    m = _ChildOverExplicitBase()
+    assert m._constructor_params == {"a": 1, "b": 2}
+
+
+# --- roundtrip (params survive save / resume) ------------------------------
+
+def test_implicit_params_survive_roundtrip():
+    m = _ImplicitSingle(num_classes=6, dropout=0.15)
+    buf = io.BytesIO()
+    m.save(buf)
+    buf.seek(0)
+    loaded = _ImplicitSingle.resume(buf, model_class=_ImplicitSingle)
+    assert loaded._constructor_params == {"num_classes": 6, "dropout": 0.15}
+
+
+def test_multilevel_params_survive_roundtrip():
+    c = _MultiChild(a=7, b=11)
+    buf = io.BytesIO()
+    c.save(buf)
+    buf.seek(0)
+    loaded = _MultiChild.resume(buf, model_class=_MultiChild)
+    assert loaded._constructor_params == {"a": 7, "b": 11}
+
+
+def test_explicit_base_chain_params_survive_roundtrip():
+    m = _ChildOverExplicitBase(a=4, b=8)
+    buf = io.BytesIO()
+    m.save(buf)
+    buf.seek(0)
+    loaded = _ChildOverExplicitBase.resume(buf, model_class=_ChildOverExplicitBase)
+    assert loaded._constructor_params == {"a": 4, "b": 8}
+
+
+def test_transformed_explicit_roundtrip_restores_original():
+    """resume() uses the frame-captured original value — not the transformed
+    one — so re-instantiation produces the correct model."""
+    m = _ExplicitTransformed(num_classes=4)
+    buf = io.BytesIO()
+    m.save(buf)
+    buf.seek(0)
+    loaded = _ExplicitTransformed.resume(buf, model_class=_ExplicitTransformed)
+    assert loaded._constructor_params == {"num_classes": 4}

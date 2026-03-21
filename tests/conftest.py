@@ -32,7 +32,9 @@ def val_loader():
 def trained_model(lenet, train_loader, val_loader):
     """LeNetMentee after one train epoch + one validation epoch."""
     torch.manual_seed(1)
-    opt, sched = lenet.create_train_objects(lr=1e-3)
+    _to = lenet.create_train_objects(lr=1e-3)
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     lenet.train_epoch(train_loader, opt, sched)
     lenet.validate_epoch(val_loader)
     return lenet, opt, sched

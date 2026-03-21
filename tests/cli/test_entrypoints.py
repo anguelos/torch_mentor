@@ -20,7 +20,9 @@ def cli_checkpoint(tmp_path):
     torch.manual_seed(0)
     model = LeNetMentee(num_classes=10)
     loader = make_loader(n_samples=16, batch_size=8)
-    opt, sched = model.create_train_objects()
+    _to = model.create_train_objects()
+
+    opt, sched = _to["optimizer"], _to["lr_scheduler"]
     model.train_epoch(loader, opt, sched)
     model.validate_epoch(make_loader(n_samples=8, seed=99))
     path = tmp_path / "cli_model.pt"
@@ -34,7 +36,7 @@ def cli_checkpoint(tmp_path):
 
 def test_report_file_exits_zero(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint)],
+        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
@@ -42,7 +44,7 @@ def test_report_file_exits_zero(cli_checkpoint):
 
 def test_report_file_output_nonempty(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint)],
+        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert len(result.stdout.strip()) > 0
@@ -50,7 +52,7 @@ def test_report_file_output_nonempty(cli_checkpoint):
 
 def test_report_file_contains_class_name(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint)],
+        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert "LeNetMentee" in result.stdout
@@ -58,7 +60,7 @@ def test_report_file_contains_class_name(cli_checkpoint):
 
 def test_report_file_contains_architecture(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint)],
+        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert "Architecture" in result.stdout
@@ -75,7 +77,7 @@ def test_report_file_no_path_exits_nonzero():
 
 def test_report_file_contains_epochs(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint)],
+        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert "Epochs trained: 1" in result.stdout

@@ -135,6 +135,6 @@ def test_inference_state_key_missing_after_roundtrip(lenet):
 
 def test_inference_state_unchanged_by_training(lenet, train_loader):
     lenet.register_inference_state("labels", list(range(10)))
-    opt, _ = lenet.create_train_objects()
+    opt = lenet.create_train_objects()["optimizer"]
     lenet.train_epoch(train_loader, opt)
     assert lenet.get_inference_state("labels") == list(range(10))

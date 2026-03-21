@@ -96,7 +96,9 @@ def main():
     else:
         model = CifarResNet(resnet_variant=p.resnet, pretrained=p.pretrained)
         model.to(p.device)
-        optimizer, lr_scheduler = model.create_train_objects(lr=p.lr)
+        _to = model.create_train_objects(lr=p.lr)
+
+        optimizer, lr_scheduler = _to["optimizer"], _to["lr_scheduler"]
 
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(p.tensorboard_dir) if p.tensorboard_dir else None

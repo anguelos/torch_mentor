@@ -1,3 +1,4 @@
+import inspect
 import sys
 import socket
 import getpass
@@ -159,15 +160,180 @@ class Mentee(nn.Module):
     # ------------------------------------------------------------------
 
     def __init__(self, **constructor_params: Any) -> None:
-        """Initialise internal history buffers and store constructor params.
+        """Initialise internal history buffers and record constructor parameters.
+
+        Constructor parameters are stored verbatim in every checkpoint so that
+        :meth:`resume` can reconstruct the model without any external
+        scaffolding.  There are two ways to supply them:
+
+        **Explicit (classic subclassing)**
+
+        Pass every argument you want recorded as a keyword argument to
+        ``super().__init__``:
+
+        .. code-block:: python
+
+            class MyNet(Mentee):
+                def __init__(self, num_classes=10, dropout=0.5):
+                    super().__init__(num_classes=num_classes, dropout=dropout)
+                    self.fc = nn.Linear(128, num_classes)
+
+        **Implicit (zero-boilerplate)**
+
+        Call ``super().__init__()`` with *no arguments* — or let an
+        intermediate base pass its own kwargs upward.  This method
+        **always** walks the entire call stack collecting ``__init__``
+        frames that operate on the same object, and reads the locals of the
+        **topmost** such frame.  The topmost frame always belongs to the
+        most-derived (concrete) class (``type(self)``), so all user-defined
+        parameters are captured regardless of inheritance depth or whether
+        an intermediate base forwarded explicit kwargs:
+
+        .. code-block:: python
+
+            class Base(Mentee):
+                def __init__(self, a=1):
+                    super().__init__()        # Mentee always walks to Child
+
+            class Child(Base):
+                def __init__(self, a=1, b=2):
+                    super().__init__()        # constructor_params = {'a': 1, 'b': 2}
+
+        The same result holds even when an intermediate base uses explicit
+        passing:
+
+        .. code-block:: python
+
+            class Base(Mentee):
+                def __init__(self, a=1):
+                    super().__init__(a=a)     # explicit — but walk still runs
+
+            class Child(Base):
+                def __init__(self, a=1, b=2):
+                    super().__init__()        # constructor_params still = {'a', 'b'}
+
+        The walk stops as soon as either condition below is violated:
+
+        1. The frame's code object is named ``__init__``
+           (rules out factory functions, class methods, and calls at
+           module level).
+        2. The ``self`` local in that frame is the *exact same object*
+           being constructed here (``frame.f_locals['self'] is self``),
+           ruling out construction happening inside another object's
+           ``__init__``.
+
+        A third guard prevents capturing locals when ``Mentee`` itself is
+        instantiated directly (``type(self) is not Mentee``).
+
+        When no ``__init__`` frame is found (factory function, module-level
+        call), the explicitly provided ``**constructor_params`` are kept as-is.
+
+        .. code-block:: python
+
+            class MyNet(Mentee):
+                def __init__(self, num_classes=10, dropout=0.5):
+                    super().__init__()   # num_classes and dropout captured automatically
+                    self.fc = nn.Linear(128, num_classes)
+
+        The implicit path also captures any ``**kwargs`` the child accepted:
+
+        .. code-block:: python
+
+            class MyNet(Mentee):
+                def __init__(self, num_classes=10, **extra):
+                    super().__init__()   # num_classes + contents of extra are all recorded
+
+        **When implicit capture is skipped**
+
+        If the three conditions above are *not* met (e.g. ``Mentee()`` is
+        instantiated directly, or ``Mentee.__init__`` is called from outside
+        an ``__init__`` context), ``constructor_params`` is left as whatever
+        was explicitly passed — which may be an empty dict.  No error is
+        raised; the checkpoint will simply store ``{}``.
 
         Parameters
         ----------
         **constructor_params : Any
-            Arbitrary keyword arguments.  Stored as
-            ``self._constructor_params`` and written verbatim into every
-            checkpoint so :meth:`resume` can reconstruct the model.
+            Keyword arguments to store.  When non-empty, they are used
+            as-is and frame introspection is skipped entirely.
+
+        Notes
+        -----
+        Frame introspection relies on ``inspect.currentframe()``, which is
+        guaranteed on CPython (the runtime used by PyTorch in practice) but
+        not mandated by the Python language specification.  On alternative
+        implementations such as PyPy the implicit path may silently fall back
+        to an empty dict; use explicit passing if portability matters.
+
+        Examples
+        --------
+        >>> class MyNet(Mentee):
+        ...     def __init__(self, num_classes=10):
+        ...         super().__init__()          # implicit: num_classes=10 captured
+        ...         self.fc = nn.Linear(128, num_classes)
+        >>> model = MyNet(num_classes=5)
+        >>> model._constructor_params
+        {'num_classes': 5}
+
+        >>> class MyNet(Mentee):
+        ...     def __init__(self, num_classes=10):
+        ...         super().__init__(num_classes=num_classes)   # explicit
+        ...         self.fc = nn.Linear(128, num_classes)
+        >>> model = MyNet(num_classes=5)
+        >>> model._constructor_params
+        {'num_classes': 5}
         """
+        # Walk up the call stack as long as each frame is an __init__
+        # operating on the same object.  The topmost such frame belongs to
+        # the most-derived (concrete) class — type(self) — whose parameters
+        # are exactly what is needed to re-instantiate the model via resume().
+        #
+        # The walk ALWAYS runs so that explicit kwargs passed by an
+        # intermediate base class to Mentee.__init__ do not prevent capturing
+        # the concrete class's full parameter set.  Explicit constructor_params
+        # are only used as a fallback when no __init__ frame is found (e.g.
+        # Mentee.__init__ was called from a factory function or at module level).
+        #
+        # Example MRO call chain — all three cases resolve correctly:
+        #
+        #   Case 1 — fully implicit:
+        #     Child.__init__(self, a, b)   <- topmost: captures {a, b}
+        #       Base.__init__(self, a)
+        #         Mentee.__init__(self)    <- walk starts here
+        #
+        #   Case 2 — intermediate base uses explicit passing:
+        #     Child.__init__(self, a, b)   <- topmost: captures {a, b}
+        #       Base.__init__(self, a)
+        #         Mentee.__init__(self, a=1)  <- non-empty kwargs, but walk
+        #                                        still runs and reaches Child
+        #
+        #   Case 3 — no __init__ context (factory / module level):
+        #     Mentee.__init__(self, foo=1)  <- top_frame is None, explicit
+        #                                      kwargs {foo: 1} are kept
+        #
+        # The walk stops as soon as a frame's co_name is not '__init__'
+        # or its 'self' local is not the object being constructed, which
+        # cleanly handles:
+        #   - direct Mentee() instantiation (module-level caller)
+        #   - construction inside another object's __init__ (different self)
+        #   - factory functions or classmethods (no 'self' / wrong name)
+        top_frame = None
+        frame = inspect.currentframe()
+        if frame is not None:
+            candidate = frame.f_back
+            while (
+                candidate is not None
+                and candidate.f_code.co_name == '__init__'
+                and candidate.f_locals.get('self') is self
+            ):
+                top_frame = candidate
+                candidate = candidate.f_back
+
+        if top_frame is not None and type(self) is not Mentee:
+            info = inspect.getargvalues(top_frame)
+            constructor_params = {k: info.locals[k] for k in info.args if k != 'self'}
+            if info.keywords:
+                constructor_params.update(info.locals[info.keywords])
         super().__init__()
         # store constructor_params for save/resume
         self._constructor_params: Dict[str, Any] = constructor_params
@@ -180,6 +346,7 @@ class Mentee(nn.Module):
         self._best_weights_so_far: Dict[str, torch.Tensor] = {}   # CPU tensors
         self._best_epoch_so_far: int = -1
         self._inference_state: Dict[str, Any] = {}   # arbitrary picklable objects (tokenizers, label maps, etc.)
+        self._default_loss_fn: Optional[Any] = None  # set by create_train_objects(loss_fn=...)
 
     @property
     def current_epoch(self) -> int:
@@ -481,6 +648,34 @@ class Mentee(nn.Module):
         """
         return {}
 
+    def _resolve_loss_fn(self, loss_fn=None):
+        """Return the effective loss function, falling back to ``_default_loss_fn``.
+
+        Parameters
+        ----------
+        loss_fn : callable, optional
+            Explicit loss function passed by the caller.  Takes precedence over
+            any default set by :meth:`create_train_objects`.
+
+        Returns
+        -------
+        callable
+            The resolved loss function.
+
+        Raises
+        ------
+        RuntimeError
+            If neither *loss_fn* nor :attr:`_default_loss_fn` is set.
+        """
+        resolved = loss_fn if loss_fn is not None else self._default_loss_fn
+        if resolved is None:
+            raise RuntimeError(
+                "No loss function available.  Either pass loss_fn= to "
+                "training_step(), or call create_train_objects(loss_fn=<fn>) "
+                "before training to set a default."
+            )
+        return resolved
+
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
@@ -490,11 +685,19 @@ class Mentee(nn.Module):
         lr: float = 1e-3,
         step_size: int = 10,
         gamma: float = 0.1,
-    ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-        """Create an Adam optimiser and a StepLR scheduler for this model.
+        loss_fn: Optional[Any] = None,
+        overwrite_default_loss: bool = False,
+    ) -> Dict[str, Any]:
+        """Create training objects and (optionally) set the default loss function.
 
-        Override to use a different optimiser or scheduler.  The return value
-        is passed directly to :meth:`train_epoch` and :meth:`resume_training`.
+        Returns a dict with ``"optimizer"``, ``"lr_scheduler"``, and
+        ``"loss_fn"`` keys.  Calling this method more than once is safe —
+        by default it will not replace a previously set default loss
+        (``overwrite_default_loss=False``), so a parametric loss that has
+        already been partially trained is preserved across optimizer resets.
+
+        Override to substitute a different optimiser or scheduler; the dict
+        structure must be preserved.
 
         Parameters
         ----------
@@ -504,21 +707,39 @@ class Mentee(nn.Module):
             Period (in epochs) for the StepLR decay.  Default is ``10``.
         gamma : float, optional
             Multiplicative decay factor for StepLR.  Default is ``0.1``.
+        loss_fn : callable, optional
+            Loss function to register as the default.  If ``None`` and no
+            default is currently set, ``_default_loss_fn`` remains ``None``
+            (which means :meth:`training_step` must either provide one or
+            raise its own error).
+        overwrite_default_loss : bool, optional
+            If ``True``, always replace the existing default loss with the
+            newly supplied *loss_fn*.  If ``False`` (default) and a default
+            is already set, the existing default is preserved even when
+            *loss_fn* is provided.  Set to ``True`` when intentionally
+            switching loss functions mid-training.
 
         Returns
         -------
-        optimizer : torch.optim.Adam
-            Optimiser over all model parameters.
-        lr_scheduler : torch.optim.lr_scheduler.StepLR
-            Scheduler that decays *lr* by *gamma* every *step_size* epochs.
+        dict
+            ``{"optimizer": Adam, "lr_scheduler": StepLR, "loss_fn": <fn or None>}``
 
         Examples
         --------
-        >>> opt, sched = model.create_train_objects(lr=1e-4, step_size=5)
+        >>> train_objs = model.create_train_objects(lr=1e-4, step_size=5,
+        ...                                         loss_fn=nn.CrossEntropyLoss())
+        >>> train_objs["optimizer"], train_objs["lr_scheduler"]
+        (Adam ..., StepLR ...)
+        >>> # second call with overwrite_default_loss=False keeps the first loss
+        >>> train_objs2 = model.create_train_objects(lr=1e-5)
+        >>> train_objs2["loss_fn"] is train_objs["loss_fn"]
+        True
         """
+        if loss_fn is not None and (overwrite_default_loss or self._default_loss_fn is None):
+            self._default_loss_fn = loss_fn
         optimizer = Adam(self.parameters(), lr=lr)
         scheduler = StepLR(optimizer, step_size=step_size, gamma=gamma)
-        return optimizer, scheduler
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "loss_fn": self._default_loss_fn}
 
     def train_epoch(
         self,
@@ -577,8 +798,8 @@ class Mentee(nn.Module):
 
         Examples
         --------
-        >>> opt, sched = model.create_train_objects(lr=1e-3)
-        >>> metrics = model.train_epoch(train_loader, opt, sched, pseudo_batch_size=4)
+        >>> _to = model.create_train_objects(lr=1e-3)
+        >>> metrics = model.train_epoch(train_loader, _to["optimizer"], _to["lr_scheduler"], pseudo_batch_size=4)
         >>> print(f"epoch {model.current_epoch}  loss={metrics['loss']:.4f}")
         """
         self.train()
@@ -801,6 +1022,7 @@ class Mentee(nn.Module):
             "inference_state": self._inference_state,
             "output_schema": self.get_output_schema(),
             "preprocessing_info": self.get_preprocessing_info(),
+            "default_loss_fn": self._default_loss_fn,
         }
         if optimizer is not None:
             checkpoint["optimizer_state"] = _to_cpu(optimizer.state_dict())
@@ -862,6 +1084,7 @@ class Mentee(nn.Module):
         instance._best_weights_so_far = checkpoint["best_weights_so_far"]
         instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
         instance._inference_state = checkpoint.get("inference_state", {})
+        instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
         return instance
 
     # ------------------------------------------------------------------
@@ -923,13 +1146,14 @@ class Mentee(nn.Module):
         instance._best_weights_so_far = checkpoint["best_weights_so_far"]
         instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
         instance._inference_state = checkpoint.get("inference_state", {})
+        instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
 
         if device is not None:
             instance.to(device)
 
         train_objects = instance.create_train_objects(**create_train_objects_kwargs)
-        optimizer = train_objects[0]
-        lr_scheduler = train_objects[1] if len(train_objects) > 1 else None
+        optimizer = train_objects["optimizer"]
+        lr_scheduler = train_objects["lr_scheduler"]
 
         if "optimizer_state" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer_state"])
@@ -941,4 +1165,4 @@ class Mentee(nn.Module):
         if lr_scheduler is not None and "lr_scheduler_state" in checkpoint:
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state"])
 
-        return (instance,) + tuple(train_objects)
+        return instance, optimizer, lr_scheduler
