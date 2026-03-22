@@ -11,6 +11,7 @@ from tqdm import tqdm
 import torch.nn as nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -120,6 +121,31 @@ def _probe_io_lines(model: "Mentee") -> List[str]:
         lines.append(f"  Output shape:  {out_shape}  (per sample, from first successful probe)")
     return lines
 
+
+
+def _make_loader(
+    dataset: Any,
+    batch_size: Optional[int],
+    collate_fn: Any,
+    shuffle: bool,
+    num_workers: int,
+) -> DataLoader:
+    """Wrap *dataset* in a DataLoader if it is not one already.
+
+    When *dataset* is already a :class:`~torch.utils.data.DataLoader` it is
+    returned unchanged and all other arguments are ignored.  Otherwise a new
+    DataLoader is created with the supplied settings; *batch_size* defaults
+    to ``1`` when ``None``.
+    """
+    if isinstance(dataset, DataLoader):
+        return dataset
+    return DataLoader(
+        dataset,
+        batch_size=batch_size if batch_size is not None else 1,
+        collate_fn=collate_fn,
+        shuffle=shuffle,
+        num_workers=num_workers,
+    )
 
 class Mentee(nn.Module):
     """A :class:`torch.nn.Module` subclass that bundles training, validation,
@@ -347,6 +373,9 @@ class Mentee(nn.Module):
         self._best_epoch_so_far: int = -1
         self._inference_state: Dict[str, Any] = {}   # arbitrary picklable objects (tokenizers, label maps, etc.)
         self._default_loss_fn: Optional[Any] = None  # set by create_train_objects(loss_fn=...)
+        self._optimizer: Optional[Any] = None       # cached when no trainer is set
+        self._lr_scheduler: Optional[Any] = None    # cached when no trainer is set
+        self.trainer: Optional[Any] = None          # optional MentorTrainer strategy object
 
     @property
     def current_epoch(self) -> int:
@@ -375,6 +404,42 @@ class Mentee(nn.Module):
             submodules).
         """
         return next(self.parameters()).device
+
+    @property
+    def optimizer(self) -> Optional[Any]:
+        """The optimizer produced by the last :meth:`create_train_objects` call.
+
+        When a :attr:`trainer` is set, returns ``trainer.optimizer``.
+        Otherwise returns the locally cached ``_optimizer``.
+        ``None`` until :meth:`create_train_objects` has been called.
+        """
+        if self.trainer is not None:
+            return self.trainer.optimizer
+        return self._optimizer
+
+    @property
+    def lr_scheduler(self) -> Optional[Any]:
+        """The LR scheduler produced by the last :meth:`create_train_objects` call.
+
+        When a :attr:`trainer` is set, returns ``trainer.lr_scheduler``.
+        Otherwise returns the locally cached ``_lr_scheduler``.
+        ``None`` until :meth:`create_train_objects` has been called.
+        """
+        if self.trainer is not None:
+            return self.trainer.lr_scheduler
+        return self._lr_scheduler
+
+    @property
+    def loss_fn(self) -> Optional[Any]:
+        """The default loss function registered by :meth:`create_train_objects`.
+
+        When a :attr:`trainer` is set, returns ``trainer.loss_fn``.
+        Otherwise returns ``_default_loss_fn``.
+        ``None`` until a loss has been registered.
+        """
+        if self.trainer is not None:
+            return self.trainer.loss_fn
+        return self._default_loss_fn
 
     def register_inference_state(self, key: str, value: Any) -> None:
         """Store an arbitrary picklable object needed at inference time.
@@ -506,7 +571,12 @@ class Mentee(nn.Module):
         ...     loss = F.cross_entropy(self(x.to(self.device)), y.to(self.device))
         ...     return loss, {"loss": loss.item()}
         """
-        raise NotImplementedError
+        if self.trainer is not None:
+            eff_fn = loss_fn if loss_fn is not None else self.trainer.loss_fn
+            return type(self.trainer).default_training_step(self, sample, eff_fn)
+        raise NotImplementedError(
+            "Override training_step() or assign a MentorTrainer to self.trainer."
+        )
 
     def validation_step(self, sample: Any, loss_fn=None) -> Dict[str, float]:
         """Evaluate the model on a single validation sample or mini-batch.
@@ -542,6 +612,9 @@ class Mentee(nn.Module):
         ...     acc = (logits.argmax(1) == y.to(self.device)).float().mean().item()
         ...     return {"acc": acc}
         """
+        if self.trainer is not None:
+            eff_fn = loss_fn if loss_fn is not None else self.trainer.loss_fn
+            return type(self.trainer).default_validate_step(self, sample, eff_fn)
         result = self.training_step(sample, loss_fn)
         # training_step returns (loss_tensor, metrics_dict); extract only metrics
         if isinstance(result, tuple) and len(result) == 2:
@@ -672,7 +745,7 @@ class Mentee(nn.Module):
         RuntimeError
             If neither *loss_fn* nor :attr:`_default_loss_fn` is set.
         """
-        resolved = loss_fn if loss_fn is not None else self._default_loss_fn
+        resolved = loss_fn if loss_fn is not None else self.loss_fn
         if resolved is None:
             raise RuntimeError(
                 "No loss function available.  Either pass loss_fn= to "
@@ -740,11 +813,17 @@ class Mentee(nn.Module):
         >>> train_objs2["loss_fn"] is train_objs["loss_fn"]
         True
         """
+        if self.trainer is not None:
+            return self.trainer.create_train_objects(
+                self, lr=lr, step_size=step_size, gamma=gamma,
+                loss_fn=loss_fn, overwrite_default_loss=overwrite_default_loss,
+            )
+        # --- trainer-less path: plain Mentee subclass managing its own optimizer ---
         if loss_fn is not None and (overwrite_default_loss or self._default_loss_fn is None):
             self._default_loss_fn = loss_fn
-        optimizer = Adam(self.parameters(), lr=lr)
-        scheduler = StepLR(optimizer, step_size=step_size, gamma=gamma)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler, "loss_fn": self._default_loss_fn}
+        self._optimizer = Adam(self.parameters(), lr=lr)
+        self._lr_scheduler = StepLR(self._optimizer, step_size=step_size, gamma=gamma)
+        return {"optimizer": self._optimizer, "lr_scheduler": self._lr_scheduler, "loss_fn": self._default_loss_fn}
 
     def train_epoch(
         self,
@@ -756,27 +835,35 @@ class Mentee(nn.Module):
         tensorboard_writer: Optional[SummaryWriter] = None,
         verbose: bool = False,
         refresh_freq: int = 20,
+        batch_size: Optional[int] = None,
+        collate_fn: Optional[Any] = None,
+        num_workers: int = 0,
+        shuffle: bool = True,
     ) -> Dict[str, float]:
         """Train the model for one full epoch.
 
         Iterates over *dataset*, calls :meth:`training_step` for each
-        sample, and accumulates gradients for *pseudo_batch_size* samples
+        batch, and accumulates gradients for *pseudo_batch_size* batches
         before calling ``optimizer.step()``.  Appends the epoch metrics to
         :attr:`_train_history`, incrementing :attr:`current_epoch`.
 
+        *dataset* may be a :class:`~torch.utils.data.DataLoader` (used
+        directly) or a :class:`~torch.utils.data.Dataset` / any sized
+        iterable (wrapped automatically using *batch_size*, *collate_fn*,
+        *num_workers*, and *shuffle*).  When a DataLoader is passed the
+        four loader kwargs are ignored.
+
         Parameters
         ----------
-        dataset : Iterable
-            Any iterable of samples, typically a
-            :class:`torch.utils.data.DataLoader`.
+        dataset : DataLoader or Dataset
+            Batched DataLoader **or** an unbatched Dataset to be wrapped.
         optimizer : torch.optim.Optimizer
             Optimiser to use for parameter updates.
         lr_scheduler : torch.optim.lr_scheduler._LRScheduler, optional
             Scheduler stepped once at the end of the epoch.
         pseudo_batch_size : int, optional
-            Number of samples over which gradients are accumulated before
-            each ``optimizer.step()``.  Allows large effective batch sizes
-            without increasing memory.  Default is ``1``.
+            Number of batches over which gradients are accumulated before
+            each ``optimizer.step()``.  Default is ``1``.
         memfail : {'raise', 'skip'}, optional
             Policy when :meth:`training_step` raises
             :exc:`MemoryError`.  ``'raise'`` propagates immediately;
@@ -787,33 +874,50 @@ class Mentee(nn.Module):
         verbose : bool, optional
             Show a ``tqdm`` progress bar.  Default is ``False``.
         refresh_freq : int, optional
-            Progress-bar postfix update interval (in samples).  Default is
+            Progress-bar postfix update interval (in batches).  Default is
             ``20``.
+        batch_size : int, optional
+            Batch size used when *dataset* is not a DataLoader.  Defaults
+            to ``1``.
+        collate_fn : callable, optional
+            Custom collate function forwarded to the DataLoader when
+            *dataset* is not already a DataLoader.
+        num_workers : int, optional
+            Number of DataLoader worker processes.  Default is ``0``
+            (main-process loading).
+        shuffle : bool, optional
+            Whether to shuffle samples when building a DataLoader from a
+            Dataset.  Default is ``True``.  Ignored when *dataset* is
+            already a DataLoader.
 
         Returns
         -------
         dict[str, float]
             Per-metric averages over the epoch, plus ``memfails`` (count of
-            skipped samples).
+            skipped batches).
 
         Raises
         ------
         MemoryError
-            When *memfail* is ``'raise'`` and a sample triggers OOM.
+            When *memfail* is ``'raise'`` and a batch triggers OOM.
 
         Examples
         --------
         >>> _to = model.create_train_objects(lr=1e-3)
-        >>> metrics = model.train_epoch(train_loader, _to["optimizer"], _to["lr_scheduler"], pseudo_batch_size=4)
+        >>> # from a DataLoader (existing usage)
+        >>> metrics = model.train_epoch(train_loader, _to["optimizer"], pseudo_batch_size=4)
+        >>> # from a Dataset (new usage)
+        >>> metrics = model.train_epoch(train_dataset, _to["optimizer"], batch_size=32, shuffle=True)
         >>> print(f"epoch {model.current_epoch}  loss={metrics['loss']:.4f}")
         """
+        loader = _make_loader(dataset, batch_size, collate_fn, shuffle, num_workers)
         self.train()
         accumulated_metrics: Dict[str, float] = {}
         memfail_count = 0
         sample_count = 0
         optimizer.zero_grad()
 
-        pbar = tqdm(dataset, desc=f"train epoch {self.current_epoch + 1}", disable=not verbose)
+        pbar = tqdm(loader, desc=f"train epoch {self.current_epoch + 1}", disable=not verbose)
         for idx, sample in enumerate(pbar):
             try:
                 loss, sample_metrics = self.training_step(sample)
@@ -836,7 +940,7 @@ class Mentee(nn.Module):
                 pbar.set_postfix({k: f"{v:.4f}" for k, v in running.items()})
 
         # final step for leftover accumulation
-        if (len(dataset) % pseudo_batch_size) != 0:
+        if (len(loader) % pseudo_batch_size) != 0:
             optimizer.step()
             optimizer.zero_grad()
 
@@ -881,6 +985,9 @@ class Mentee(nn.Module):
         tensorboard_writer: Optional[SummaryWriter] = None,
         verbose: bool = False,
         refresh_freq: int = 20,
+        batch_size: Optional[int] = None,
+        collate_fn: Optional[Any] = None,
+        num_workers: int = 0,
     ) -> Dict[str, float]:
         """Validate the model at the current epoch.
 
@@ -892,10 +999,15 @@ class Mentee(nn.Module):
         previous epochs, the current weights are saved to
         :attr:`_best_weights_so_far`.
 
+        *dataset* may be a :class:`~torch.utils.data.DataLoader` (used
+        directly) or a :class:`~torch.utils.data.Dataset` / any sized
+        iterable (wrapped automatically with *batch_size* and *collate_fn*).
+        Shuffle is always ``False`` for validation.
+
         Parameters
         ----------
-        dataset : Iterable
-            Validation DataLoader or any iterable of samples.
+        dataset : DataLoader or Dataset
+            Batched DataLoader **or** an unbatched Dataset to be wrapped.
         recalculate : bool, optional
             Force re-evaluation even if this epoch was already validated.
             Default is ``False``.
@@ -908,6 +1020,14 @@ class Mentee(nn.Module):
             Show a ``tqdm`` progress bar.  Default is ``False``.
         refresh_freq : int, optional
             Progress-bar postfix update interval.  Default is ``20``.
+        batch_size : int, optional
+            Batch size used when *dataset* is not a DataLoader.  Defaults
+            to ``1``.
+        collate_fn : callable, optional
+            Custom collate function forwarded to the DataLoader when
+            *dataset* is not already a DataLoader.
+        num_workers : int, optional
+            Number of DataLoader worker processes.  Default is ``0``.
 
         Returns
         -------
@@ -917,11 +1037,14 @@ class Mentee(nn.Module):
         Raises
         ------
         MemoryError
-            When *memfail* is ``'raise'`` and a sample triggers OOM.
+            When *memfail* is ``'raise'`` and a batch triggers OOM.
 
         Examples
         --------
+        >>> # from a DataLoader (existing usage)
         >>> val_metrics = model.validate_epoch(val_loader)
+        >>> # from a Dataset (new usage)
+        >>> val_metrics = model.validate_epoch(val_dataset, batch_size=64)
         >>> print(f"acc={val_metrics['acc']:.4f}  best_epoch={model._best_epoch_so_far}")
         """
         epoch = self.current_epoch
@@ -929,12 +1052,13 @@ class Mentee(nn.Module):
         if not recalculate and epoch in self._validate_history:
             return self._validate_history[epoch]
 
+        loader = _make_loader(dataset, batch_size, collate_fn, shuffle=False, num_workers=num_workers)
         self.eval()
         accumulated_metrics: Dict[str, float] = {}
         memfail_count = 0
         sample_count = 0
 
-        pbar = tqdm(dataset, desc=f"val   epoch {epoch + 1}", disable=not verbose)
+        pbar = tqdm(loader, desc=f"val   epoch {epoch + 1}", disable=not verbose)
         with torch.no_grad():
             for idx, sample in enumerate(pbar):
                 try:
@@ -1029,10 +1153,12 @@ class Mentee(nn.Module):
             "preprocessing_info": self.get_preprocessing_info(),
             "default_loss_fn": self._default_loss_fn,
         }
-        if optimizer is not None:
-            checkpoint["optimizer_state"] = _to_cpu(optimizer.state_dict())
-        if lr_scheduler is not None:
-            checkpoint["lr_scheduler_state"] = lr_scheduler.state_dict()
+        eff_optimizer    = optimizer    if optimizer    is not None else self.optimizer
+        eff_lr_scheduler = lr_scheduler if lr_scheduler is not None else self.lr_scheduler
+        if eff_optimizer is not None:
+            checkpoint["optimizer_state"] = _to_cpu(eff_optimizer.state_dict())
+        if eff_lr_scheduler is not None:
+            checkpoint["lr_scheduler_state"] = eff_lr_scheduler.state_dict()
         torch.save(checkpoint, path)
 
     @classmethod

@@ -27,7 +27,8 @@
       "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/cli/ -v)",
       "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/cli/test_entrypoints.py::test_report_file_exits_zero -v)",
       "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/cli/test_entrypoints.py::test_report_file_exits_zero -v -s)",
-      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/cli/test_entrypoints.py::test_report_file_exits_zero --tb=long)"
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python -m pytest tests/cli/test_entrypoints.py::test_report_file_exits_zero --tb=long)",
+      "Bash(PATH=\"/home/anguelos_ro/venvs/p312/bin:$PATH\" /home/anguelos_ro/venvs/p312/bin/python -m pytest tests/)"
     ]
   }
 }

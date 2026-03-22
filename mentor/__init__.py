@@ -1,5 +1,5 @@
 from mentor.mentee import Mentee
-from mentor.modalities import MentorModality, Classifier, Regressor
+from mentor.trainers import MentorTrainer, Classifier, Regressor
 
-__all__ = ["Mentee", "MentorModality", "Classifier", "Regressor"]
+__all__ = ["Mentee", "MentorTrainer", "Classifier", "Regressor"]
 __version__ = "0.1.0"

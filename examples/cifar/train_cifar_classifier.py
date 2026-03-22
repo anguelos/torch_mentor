@@ -15,7 +15,11 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from fargv import fargv
 
+<<<<<<< HEAD
 from mentor.modalities import Classifier
+=======
+from mentor.trainers import Classifier
+>>>>>>> 50dae9f (prepairing for RTD)
 
 
 params = {

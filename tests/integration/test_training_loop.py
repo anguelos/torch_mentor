@@ -162,3 +162,51 @@ def test_train_validate_alternation_three_cycles(lenet, train_loader, val_loader
         lenet.validate_epoch(val_loader)
     assert lenet.current_epoch == 3
     assert len(lenet._validate_history) == 3
+
+
+# ---------------------------------------------------------------------------
+# Dataset (non-DataLoader) input to train_epoch / validate_epoch
+# ---------------------------------------------------------------------------
+
+def test_train_epoch_accepts_dataset(lenet, train_loader):
+    """train_epoch wraps a TensorDataset in a DataLoader automatically."""
+    from torch.utils.data import TensorDataset
+    ds = train_loader.dataset          # underlying TensorDataset
+    opt = lenet.create_train_objects()["optimizer"]
+    metrics = lenet.train_epoch(ds, opt, batch_size=8)
+    assert "loss" in metrics
+    assert lenet.current_epoch == 1
+
+
+def test_validate_epoch_accepts_dataset(lenet, val_loader):
+    """validate_epoch wraps a TensorDataset in a DataLoader automatically."""
+    from torch.utils.data import TensorDataset
+    _to = lenet.create_train_objects()
+    lenet.train_epoch(val_loader, _to["optimizer"])
+    ds = val_loader.dataset
+    metrics = lenet.validate_epoch(ds, batch_size=8)
+    assert "acc" in metrics
+
+
+def test_train_epoch_dataset_with_collate_fn(lenet, train_loader):
+    """collate_fn is forwarded when building the loader from a Dataset."""
+    import torch
+    collated = []
+
+    def tracking_collate(batch):
+        collated.append(True)
+        return torch.utils.data.default_collate(batch)
+
+    ds = train_loader.dataset
+    opt = lenet.create_train_objects()["optimizer"]
+    lenet.train_epoch(ds, opt, batch_size=8, collate_fn=tracking_collate)
+    assert len(collated) > 0
+
+
+def test_train_epoch_dataloader_ignores_batch_size(lenet, train_loader):
+    """When a DataLoader is passed, batch_size is ignored (loader used as-is)."""
+    opt = lenet.create_train_objects()["optimizer"]
+    # batch_size=999 would be invalid for the dataset size, but since a
+    # DataLoader is passed it should be silently ignored.
+    metrics = lenet.train_epoch(train_loader, opt, batch_size=999)
+    assert lenet.current_epoch == 1
