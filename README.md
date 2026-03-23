@@ -1,19 +1,9 @@
 # mentor : A pytorch training framework for lazy and impatient people
 
 [![License](https://img.shields.io/github/license/anguelos/mentor)](https://github.com/anguelos/mentor/blob/main/LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/anguelos/mentor/releases)
-[![Python](https://img.shields.io/badge/python-3.7%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D1.9-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![Last commit](https://img.shields.io/github/last-commit/anguelos/mentor)](https://github.com/anguelos/mentor/commits/main)
-[![Open issues](https://img.shields.io/github/issues/anguelos/mentor)](https://github.com/anguelos/mentor/issues)
-[![Open PRs](https://img.shields.io/github/issues-pr/anguelos/mentor)](https://github.com/anguelos/mentor/pulls)
-[![Repo size](https://img.shields.io/github/repo-size/anguelos/mentor)](https://github.com/anguelos/mentor)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000)](https://github.com/psf/black)
-[![Linting: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Tests](https://github.com/anguelos/mentor/actions/workflows/tests.yml/badge.svg)](https://github.com/anguelos/mentor/actions/workflows/tests.yml)
-[![codecov](https://codecov.io/gh/anguelos/mentor/branch/main/graph/badge.svg)](https://codecov.io/gh/anguelos/mentor)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/anguelos/mentor/badges/badges/coverage.json)](https://github.com/anguelos/mentor/actions/workflows/tests.yml)
 [![Docs](https://readthedocs.org/projects/mentor/badge/?version=latest)](https://mentor.readthedocs.io/en/latest/)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)](https://github.com/anguelos/mentor)
 
 A lightweight PyTorch training framework built around a single idea: **a model should carry its own training history**.
 
