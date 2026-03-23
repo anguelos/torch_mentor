@@ -1,32 +1,33 @@
 # CIFAR-10 with ResNet
 
-The `examples/cifar/train_cifar.py` script trains a torchvision ResNet on
-CIFAR-10 using a {class}`~mentor.Mentee` subclass.  It demonstrates the full
-mentor workflow: argument parsing, training, validation, checkpointing, and
-resuming.
+Two example scripts train a torchvision ResNet on CIFAR-10 using mentor.
+They demonstrate the same full workflow — argument parsing, training,
+validation, checkpointing, and resuming — using the two main patterns
+the framework supports.
 
-## Running the example
+---
+
+## train_cifar.py — custom training step
+
+`examples/cifar/train_cifar.py` subclasses {class}`~mentor.Mentee` directly
+and overrides `training_step` and `validation_step` for full control over
+the loss and metrics.
 
 ```bash
 python examples/cifar/train_cifar.py \
     -resume_path cifar.pt \
-    -epochs 30 \
-    -batch_size 64 \
-    -pseudo_batch 2 \
-    -lr 0.001 \
-    -resnet resnet18 \
-    -pretrained true \
-    -device cuda \
-    -verbose true
+    -epochs 30 -batch_size 64 -pseudo_batch 2 \
+    -lr 0.001 -resnet resnet18 -pretrained true \
+    -device cuda -verbose true
 ```
 
-Resuming a run simply re-uses the same `-resume_path`:
+Resuming uses the same path:
 
 ```bash
 python examples/cifar/train_cifar.py -resume_path cifar.pt -epochs 60
 ```
 
-## Key design decisions
+### Key design decisions
 
 **Single path for save and load**
 : `-resume_path` is used both for loading an existing checkpoint and for
@@ -49,9 +50,31 @@ python examples/cifar/train_cifar.py -resume_path cifar.pt -epochs 60
   {meth}`~mentor.Mentee.register_inference_state` so any checkpoint is
   self-contained for inference.
 
-## Source walkthrough
+### Source
 
 ```{literalinclude} ../../examples/cifar/train_cifar.py
+:language: python
+:linenos:
+```
+
+---
+
+## train_cifar_classifier.py — built-in Classifier trainer
+
+`examples/cifar/train_cifar_classifier.py` demonstrates the composition
+pattern: the model subclasses {class}`~mentor.Mentee`, assigns
+`self.trainer = Classifier()` in `__init__`, and only implements `forward`.
+The trainer supplies cross-entropy loss, top-1 accuracy, and a default Adam
+optimiser automatically.
+
+```bash
+python examples/cifar/train_cifar_classifier.py \
+    -resume_path cifar2.pt -epochs 20 -verbose true
+```
+
+### Source
+
+```{literalinclude} ../../examples/cifar/train_cifar_classifier.py
 :language: python
 :linenos:
 ```

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CIFAR-10 with Classifier modality — minimal version.
+"""CIFAR-10 with Classifier trainer — minimal version.
 
 Usage:
     python train_cifar_classifier.py
@@ -15,11 +15,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from fargv import fargv
 
-<<<<<<< HEAD
-from mentor.modalities import Classifier
-=======
-from mentor.trainers import Classifier
->>>>>>> 50dae9f (prepairing for RTD)
+from mentor import Mentee, Classifier
 
 
 params = {
@@ -33,11 +29,12 @@ params = {
 }
 
 
-class CifarNet(Classifier):
+class CifarNet(Mentee):
     def __init__(self, num_classes=10, resnet="resnet18"):
         super().__init__(num_classes=num_classes, resnet=resnet)
         self.net = tvm.get_model(resnet, weights=None)
         self.net.fc = nn.Linear(self.net.fc.in_features, num_classes)
+        self.trainer = Classifier()
 
     def forward(self, x):
         return self.net(x)

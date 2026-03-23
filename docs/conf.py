@@ -5,14 +5,13 @@ sys.path.insert(0, os.path.abspath(".."))
 project   = "mentor"
 author    = "mentor contributors"
 copyright = f"2024, {author}"
-release   = "0.1.0"
+release   = "0.2.0"
 
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
-    "sphinx_autodoc_typehints",
     "myst_parser",
     "sphinx_copybutton",
     "nbsphinx",
@@ -24,9 +23,9 @@ napoleon_google_docstring  = False
 napoleon_use_param         = True
 napoleon_use_rtype         = True
 
-# autodoc
+# autodoc — types are documented in NumPy sections; suppress annotation injection
 autodoc_member_order       = "bysource"
-autodoc_typehints          = "description"
+autodoc_typehints          = "none"
 autoclass_content          = "both"
 autodoc_default_options    = {
     "members":          True,
@@ -49,7 +48,6 @@ html_static_path   = ["_static"]
 html_title         = "mentor"
 html_show_sourcelink = True
 
-suppress_warnings = ["sphinx_autodoc_typehints.forward_reference"]
 
 # single-page HTML
 singlehtml_sidebars = {"**": ["globaltoc.html", "relations.html"]}

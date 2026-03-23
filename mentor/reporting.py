@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import torch
-from mentor.mentee import _state_dict_architecture_lines
+from mentor.mentee import _state_dict_architecture_lines, _unfreeze_in_frozen_set
 
 # ANSI colour codes
 _BOLD   = "\033[1m"
@@ -15,6 +15,7 @@ _CYAN   = "\033[36m"
 _GREEN  = "\033[32m"
 _YELLOW = "\033[33m"
 _RED    = "\033[31m"
+_GRAY   = "\033[90m"
 
 _SECTION_RE = re.compile(r'^[A-Z][^:]*(?:\s*\([^)]*\))?:\s*$')
 
@@ -42,12 +43,16 @@ def _colorize_report(report: str) -> str:
                 val = val.replace("absent", f"{_YELLOW}absent{_RESET}")
             result.append(f"{_BOLD}{key}{_RESET}:{val}")
             continue
-        # Indented detail lines
-        if line.startswith("  "):
+        # Indented detail lines (skip tree lines which have their own style)
+        if line.startswith("  ") and "─" not in line and "│" not in line:
             result.append(f"{_DIM}{line}{_RESET}")
             continue
         result.append(line)
-    return "\n".join(result)
+    joined = "\n".join(result)
+    joined = joined.replace("[frozen]",   f"{_RED}[frozen]{_RESET}")
+    joined = joined.replace("[unfrozen]", f"{_GREEN}[unfrozen]{_RESET}")
+    joined = joined.replace("[mixed]",    f"{_GRAY}[mixed]{_RESET}")
+    return joined
 
 
 def _fmt_metrics(metrics: Dict[str, float]) -> str:
@@ -64,7 +69,121 @@ def _check_class(class_module: str, class_name: str) -> str:
     return f"OK (found in '{class_module}')"
 
 
-def get_report_str(path: str, render_colors: bool = False) -> str:
+
+def _param_tree_lines(
+    state_dict: Dict[str, Any],
+    frozen_modules: set,
+    layer_names: List[str] = None,
+) -> List[str]:
+    """Render a parameter-module tree from *state_dict*.
+
+    Each module node shows its **full dotted path** from the root (e.g.
+    ``backbone.layer4.1.bn2``) so the name can be passed directly to
+    ``model.freeze()``.  Stateless modules are omitted automatically.
+
+    When *layer_names* is supplied (from the checkpoint, matching
+    ``Mentee.layer_names``) the tree nodes are exactly those paths;
+    state_dict entries whose immediate parent module is not in *layer_names*
+    (e.g. pure-buffer modules) are filtered out so the report stays
+    consistent with what the live model exposes.
+
+    Frozen-status tags:
+
+    * ``[frozen]``   — all parameters under this module are frozen (red).
+    * ``[unfrozen]`` — all parameters are trainable (green).
+    * ``[mixed]``    — some frozen, some trainable (gray).
+
+    Parameters
+    ----------
+    state_dict : dict
+        Checkpoint state_dict (keys are dotted parameter paths).
+    frozen_modules : set
+        Module-name prefixes that are frozen (from the checkpoint).
+    layer_names : list[str], optional
+        Ordered list of parameter-bearing module paths from
+        ``Mentee.layer_names``.  When present the tree is filtered to
+        exactly these modules; when absent (old checkpoint) the tree is
+        derived from state_dict keys directly.
+    """
+    # Filter state_dict to only parameter-relevant entries when layer_names
+    # is available. This drops pure-buffer keys (running_mean / running_var
+    # in standalone buffer modules) that have no corresponding module in
+    # layer_names, keeping the report consistent with Mentee.layer_names.
+    if layer_names is not None:
+        ln_set = set(layer_names)
+        state_dict = {
+            k: v for k, v in state_dict.items()
+            if ".".join(k.split(".")[:-1]) in ln_set
+        }
+
+    # --- build nested dict tree ---
+    tree: Dict[str, Any] = {}
+    for key, tensor in state_dict.items():
+        parts = key.split(".")
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = tuple(tensor.shape)   # leaf: shape tuple
+
+    def _param_is_frozen(param_path: str) -> bool:
+        return any(
+            param_path == m or param_path.startswith(m + ".")
+            for m in frozen_modules
+        )
+
+    def _count_params(path: str) -> int:
+        total = 0
+        for k, t in state_dict.items():
+            if k == path or k.startswith(path + "."):
+                elems = 1
+                for d in t.shape:
+                    elems *= d
+                total += elems
+        return total
+
+    def _module_status(path: str) -> str:
+        """Return 'frozen', 'unfrozen', or 'mixed' for a module path."""
+        params = [k for k in state_dict if k == path or k.startswith(path + ".")]
+        if not params:
+            return "unfrozen"
+        flags = [_param_is_frozen(p) for p in params]
+        if all(flags):
+            return "frozen"
+        if not any(flags):
+            return "unfrozen"
+        return "mixed"
+
+    out: List[str] = []
+
+    def _render(node: Dict[str, Any], path: str, prefix: str) -> None:
+        items = list(node.items())
+        for idx, (name, val) in enumerate(items):
+            is_last   = idx == len(items) - 1
+            connector = "└── " if is_last else "├── "
+            child_pfx = prefix + ("    " if is_last else "│   ")
+            full_path = f"{path}.{name}" if path else name
+
+            if isinstance(val, dict):
+                # Module node — label is the full path from root
+                n      = _count_params(full_path)
+                status = _module_status(full_path)
+                tag    = f"  [{status}]"
+                out.append(f"{prefix}{connector}{full_path}  ({n:,} params){tag}")
+                _render(val, full_path, child_pfx)
+            else:
+                # Parameter leaf — local name + shape (path already visible from parent)
+                shape     = val
+                elems     = 1
+                for d in shape:
+                    elems *= d
+                shape_str = " × ".join(str(d) for d in shape) if shape else "scalar"
+                out.append(f"{prefix}{connector}{name}  {shape_str}  ({elems:,})")
+
+    _render(tree, "", "")
+    return out
+
+
+def get_report_str(path: str, render_colors: bool = False, verbose: bool = False) -> str:
     """Generate a human-readable text report for a mentor checkpoint file.
 
     Loads the checkpoint with ``map_location=\"cpu\"`` so no GPU is required.
@@ -195,24 +314,100 @@ def get_report_str(path: str, render_colors: bool = False) -> str:
     lines.append(f"Optimizer state:    {'present' if has_opt   else 'absent'}")
     lines.append(f"LR scheduler state: {'present' if has_sched else 'absent'}")
 
+    # --- verbose: layer tree ---
+    if verbose:
+        frozen_modules = set(checkpoint.get("frozen_modules", []))
+        layer_names = checkpoint.get("layer_names", None)
+        tree_lines = _param_tree_lines(state_dict, frozen_modules, layer_names)
+        lines.append("Layer tree:")
+        lines += tree_lines
+        lines.append("")
+
     report = "\n".join(lines)
     if render_colors:
         report = _colorize_report(report)
     return report
 
 
+def _apply_layer_flags(
+    checkpoint: Dict[str, Any],
+    freeze: List[str],
+    unfreeze: List[str],
+) -> None:
+    """Mutate *checkpoint* in-place: update ``frozen_modules`` from patterns.
+
+    Uses the ``layer_names`` list stored in the checkpoint so no model
+    instantiation is required.  Raises :exc:`ValueError` if any pattern
+    does not match a layer name (mirrors :meth:`~mentor.Mentee.select_layers`).
+    """
+    import re as _re
+
+    layer_names: List[str] = checkpoint.get("layer_names", [])
+    if not layer_names and (freeze or unfreeze):
+        raise ValueError(
+            "Checkpoint does not contain layer_names. "
+            "Re-save the model with a current version of mentor to enable "
+            "-freeze / -unfreeze from the CLI."
+        )
+
+    def _select(patterns: List[str]) -> List[str]:
+        matched: List[str] = []
+        seen: set = set()
+        for pat in patterns:
+            hits = [n for n in layer_names if _re.fullmatch(pat, n)]
+            if not hits:
+                raise ValueError(
+                    f"Pattern {pat!r} did not match any layer name. "
+                    f"Available names: {layer_names}"
+                )
+            for n in hits:
+                if n not in seen:
+                    seen.add(n)
+                    matched.append(n)
+        return matched
+
+    frozen: set = set(checkpoint.get("frozen_modules", []))
+    if unfreeze:
+        targets = _select(unfreeze)
+        frozen = _unfreeze_in_frozen_set(frozen, targets, layer_names)
+    if freeze:
+        for name in _select(freeze):
+            # Remove any existing finer-grained rules subsumed by this new rule
+            frozen = {
+                existing for existing in frozen
+                if not (existing == name or existing.startswith(name + "."))
+            }
+            frozen.add(name)
+    checkpoint["frozen_modules"] = sorted(frozen)
+
+
 def main_report_file() -> None:
     from fargv import fargv
     params = {
-        "path":      ["",    "Path to mentor checkpoint file"],
-        "no_colors": [False, "Disable terminal colour output"],
-        "verbose":   [False, "Print extra detail"],
+        "path":      ["",      "Path to mentor checkpoint file"],
+        "no_colors": [False,   "Disable terminal colour output"],
+        "verbose":   [False,   "Print extra detail"],
+        "freeze":    [set([]), "Layer name patterns to freeze (regex, e.g. backbone\\.layer4\\..*)"],
+        "unfreeze":  [set([]), "Layer name patterns to unfreeze (regex)"],
     }
     p, _ = fargv(params)
     if not p.path:
         print("Error: -path is required.")
         raise SystemExit(1)
-    report = get_report_str(p.path, render_colors=not p.no_colors)
+
+    freeze_patterns   = list(p.freeze)
+    unfreeze_patterns = list(p.unfreeze)
+
+    if freeze_patterns or unfreeze_patterns:
+        checkpoint = torch.load(p.path, weights_only=False, map_location="cpu")
+        try:
+            _apply_layer_flags(checkpoint, freeze_patterns, unfreeze_patterns)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            raise SystemExit(1)
+        torch.save(checkpoint, p.path)
+
+    report = get_report_str(p.path, render_colors=not p.no_colors, verbose=p.verbose)
     print(report)
 
 

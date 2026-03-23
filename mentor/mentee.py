@@ -1,4 +1,5 @@
 import inspect
+import re
 import sys
 import socket
 import getpass
@@ -45,6 +46,91 @@ def _to_cpu(obj: Any) -> Any:
         return [_to_cpu(v) for v in obj]
     return obj
 
+
+
+
+def _immediate_children(parent: str, layer_names: List[str]) -> List[str]:
+    """Return the shallowest descendants of *parent* in *layer_names*.
+
+    *layer_names* must be in ``named_modules()`` pre-order (parent before
+    children).  For example, if *parent* is ``"iunet"`` and *layer_names*
+    contains ``["iunet.downsampling_layers", "iunet.downsampling_layers.0",
+    "iunet.upsampling_layers"]``, the result is
+    ``["iunet.downsampling_layers", "iunet.upsampling_layers"]``.
+    """
+    prefix = parent + "."
+    result: List[str] = []
+    for name in layer_names:
+        if not name.startswith(prefix):
+            continue
+        # skip deeper descendants already covered by the last added child
+        if result and name.startswith(result[-1] + "."):
+            continue
+        result.append(name)
+    return result
+
+
+def _remove_target_from_frozen(
+    frozen: set,
+    target: str,
+    layer_names: List[str],
+) -> set:
+    """Return a new frozen set with *target* removed, expanding ancestor rules.
+
+    Handles three cases:
+
+    * ``target in frozen`` — direct discard.
+    * An ancestor rule covers *target* (e.g. ``frozen = {"iunet"}`` and
+      ``target = "iunet.downsampling_layers"``) — the ancestor is replaced by
+      sibling rules so the rest of the subtree stays frozen.
+    * *target* is an ancestor of one or more frozen child entries (e.g.
+      ``frozen = {"iunet.downsampling_layers", "iunet.upsampling_layers"}``
+      and ``target = "iunet"``) — all child entries are removed so the whole
+      subtree becomes trainable.
+    """
+    frozen = set(frozen)
+
+    # Remove exact entry and any child entries covered by target
+    frozen.discard(target)
+    frozen = {m for m in frozen if not m.startswith(target + ".")}
+
+    # Handle ancestor expansion: find deepest ancestor in frozen covering target
+    ancestors = sorted(
+        [m for m in frozen if target.startswith(m + ".")], key=len
+    )
+    if not ancestors:
+        return frozen  # nothing left to expand
+
+    ancestor = ancestors[-1]  # deepest covering rule
+    frozen.discard(ancestor)
+
+    children = _immediate_children(ancestor, layer_names)
+    for child in children:
+        if child == target:
+            pass  # this is exactly what we want unfrozen -- don't add back
+        elif target.startswith(child + "."):
+            # child is an intermediate ancestor; add it then recurse
+            frozen.add(child)
+            frozen = _remove_target_from_frozen(frozen, target, layer_names)
+        else:
+            frozen.add(child)  # sibling subtree -- keep frozen
+
+    return frozen
+
+
+def _unfreeze_in_frozen_set(
+    frozen: set,
+    targets: List[str],
+    layer_names: List[str],
+) -> set:
+    """Return updated frozen set after removing *targets*, expanding ancestors.
+
+    Convenience wrapper around :func:`_remove_target_from_frozen` that
+    processes a list of targets in order.
+    """
+    for target in targets:
+        frozen = _remove_target_from_frozen(frozen, target, layer_names)
+    return frozen
 
 def _state_dict_architecture_lines(state_dict: Dict[str, Any]) -> List[str]:
     """Derive architecture stats from a state_dict without instantiating the model."""
@@ -376,6 +462,8 @@ class Mentee(nn.Module):
         self._optimizer: Optional[Any] = None       # cached when no trainer is set
         self._lr_scheduler: Optional[Any] = None    # cached when no trainer is set
         self.trainer: Optional[Any] = None          # optional MentorTrainer strategy object
+        self._grad_scaler: Optional[Any] = None     # torch.cuda.amp.GradScaler, created on first AMP train_epoch
+        self._frozen_modules: set = set()           # module name prefixes frozen via freeze()
 
     @property
     def current_epoch(self) -> int:
@@ -387,6 +475,25 @@ class Mentee(nn.Module):
             Equal to ``len(self._train_history)``.  Zero on a fresh model.
         """
         return len(self._train_history)
+
+    @property
+    def layer_names(self) -> List[str]:
+        """Full dotted paths of every parameter-bearing module, in module order.
+
+        These are the names accepted by :meth:`freeze` and :meth:`unfreeze`,
+        and are also the node labels shown by ``mtr_report_file -verbose``.
+
+        Returns
+        -------
+        list[str]
+            E.g. ``['backbone', 'backbone.layer4', 'backbone.layer4.1.bn2', 'head']``.
+            Modules with no parameters (ReLU, Dropout, …) are omitted.
+        """
+        return [
+            name
+            for name, module in self.named_modules()
+            if name and list(module.parameters())
+        ]
 
     @property
     def device(self) -> torch.device:
@@ -839,6 +946,7 @@ class Mentee(nn.Module):
         collate_fn: Optional[Any] = None,
         num_workers: int = 0,
         shuffle: bool = True,
+        amp: bool = False,
     ) -> Dict[str, float]:
         """Train the model for one full epoch.
 
@@ -889,6 +997,11 @@ class Mentee(nn.Module):
             Whether to shuffle samples when building a DataLoader from a
             Dataset.  Default is ``True``.  Ignored when *dataset* is
             already a DataLoader.
+        amp : bool, optional
+            Enable automatic mixed precision via
+            ``torch.autocast`` and ``torch.cuda.amp.GradScaler``.
+            The scaler is cached on the model as ``_grad_scaler`` so its
+            loss-scale adapts correctly across epochs.  Default is ``False``.
 
         Returns
         -------
@@ -917,17 +1030,28 @@ class Mentee(nn.Module):
         sample_count = 0
         optimizer.zero_grad()
 
+        if amp:
+            if self._grad_scaler is None:
+                self._grad_scaler = torch.cuda.amp.GradScaler()
+        scaler = self._grad_scaler
+
         pbar = tqdm(loader, desc=f"train epoch {self.current_epoch + 1}", disable=not verbose)
         for idx, sample in enumerate(pbar):
             try:
-                loss, sample_metrics = self.training_step(sample)
+                with torch.autocast(device_type=self.device.type, enabled=amp):
+                    loss, sample_metrics = self.training_step(sample)
                 for k, v in sample_metrics.items():
                     accumulated_metrics[k] = accumulated_metrics.get(k, 0.0) + v
                 sample_count += 1
-                (loss / pseudo_batch_size).backward()
+                scaled = scaler.scale(loss / pseudo_batch_size) if amp else (loss / pseudo_batch_size)
+                scaled.backward()
 
                 if (idx + 1) % pseudo_batch_size == 0:
-                    optimizer.step()
+                    if amp:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
                     optimizer.zero_grad()
             except MemoryError:
                 if memfail == "raise":
@@ -941,7 +1065,11 @@ class Mentee(nn.Module):
 
         # final step for leftover accumulation
         if (len(loader) % pseudo_batch_size) != 0:
-            optimizer.step()
+            if amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             optimizer.zero_grad()
 
         if lr_scheduler is not None:
@@ -1102,9 +1230,467 @@ class Mentee(nn.Module):
 
         return val_metrics
 
+    def fit(
+        self,
+        train_data: Any,
+        val_data: Optional[Any] = None,
+        epochs: int = 1,
+        lr: float = 1e-3,
+        batch_size: Optional[int] = None,
+        collate_fn: Optional[Any] = None,
+        num_workers: int = 0,
+        pseudo_batch_size: int = 1,
+        checkpoint_path: Optional[Union[str, Path]] = None,
+        tensorboard_dir: Optional[str] = None,
+        verbose: bool = False,
+        memfail: str = "raise",
+        device: Optional[str] = None,
+        patience: Optional[int] = None,
+        amp: bool = False,
+    ) -> "Mentee":
+        """Train and optionally validate for a fixed number of epochs.
+
+        A convenience wrapper around :meth:`train_epoch`,
+        :meth:`validate_epoch`, and :meth:`save` that drives the full
+        training loop in one call.  It is equivalent to writing the loop
+        manually and is provided for cases where you do not need to insert
+        custom logic between epochs.
+
+        If :attr:`optimizer` is ``None`` when ``fit`` is called,
+        :meth:`create_train_objects` is called automatically with the
+        supplied *lr*.  If training objects already exist (e.g. a previous
+        call to :meth:`create_train_objects` or :meth:`resume_training`),
+        they are reused unchanged.
+
+        Parameters
+        ----------
+        train_data : DataLoader or Dataset
+            Training data — passed directly to :meth:`train_epoch`.
+        val_data : DataLoader or Dataset, optional
+            Validation data — passed to :meth:`validate_epoch` after each
+            epoch.  Skipped when ``None``.
+        epochs : int, optional
+            Number of epochs to train.  Default is ``1``.
+        lr : float, optional
+            Learning rate passed to :meth:`create_train_objects` when no
+            optimizer exists yet.  Ignored if training objects are already
+            set up.  Default is ``1e-3``.
+        batch_size : int, optional
+            Batch size used when *train_data* or *val_data* is not already
+            a :class:`~torch.utils.data.DataLoader`.
+        collate_fn : callable, optional
+            Custom collate function forwarded to the DataLoader.
+        num_workers : int, optional
+            DataLoader worker processes.  Default is ``0``.
+        pseudo_batch_size : int, optional
+            Gradient accumulation steps.  Default is ``1``.
+        checkpoint_path : str or Path, optional
+            If provided, :meth:`save` is called after every epoch.
+        tensorboard_dir : str, optional
+            Directory for a :class:`~torch.utils.tensorboard.SummaryWriter`.
+            A writer is created at the start and closed when training ends.
+            Skipped when ``None``.
+        verbose : bool, optional
+            Show ``tqdm`` progress bars and per-epoch summary lines.
+            Default is ``False``.
+        memfail : {'raise', 'ignore'}, optional
+            OOM policy forwarded to :meth:`train_epoch` and
+            :meth:`validate_epoch`.  Default is ``'raise'``.
+        device : str, optional
+            If provided, the model is moved to this device before training
+            starts (e.g. ``'cuda'``, ``'cpu'``).
+        patience : int, optional
+            Early-stopping patience.  If the principal validation metric
+            has not improved for *patience* consecutive epochs, training
+            stops before reaching *epochs*.  Requires *val_data* to be
+            set; ignored when ``None`` (default).
+        amp : bool, optional
+            Enable automatic mixed precision.  Forwarded to
+            :meth:`train_epoch`.  Default is ``False``.
+
+        Returns
+        -------
+        Mentee
+            ``self``, so calls can be chained.
+
+        Examples
+        --------
+        >>> model = MyNet()
+        >>> model.fit(train_loader, val_loader, epochs=10, lr=1e-3,
+        ...           checkpoint_path="run.pt", tensorboard_dir="tb/",
+        ...           verbose=True)
+        >>> print(f"best epoch: {model._best_epoch_so_far}")
+        """
+        if device is not None:
+            self.to(device)
+
+        if self.optimizer is None:
+            self.create_train_objects(lr=lr)
+
+        writer = None
+        if tensorboard_dir is not None:
+            writer = SummaryWriter(tensorboard_dir)
+
+        try:
+            for _ in range(epochs):
+                train_metrics = self.train_epoch(
+                    train_data,
+                    self.optimizer,
+                    lr_scheduler=self.lr_scheduler,
+                    batch_size=batch_size,
+                    collate_fn=collate_fn,
+                    num_workers=num_workers,
+                    pseudo_batch_size=pseudo_batch_size,
+                    memfail=memfail,
+                    tensorboard_writer=writer,
+                    verbose=verbose,
+                    amp=amp,
+                )
+                val_metrics: Dict[str, float] = {}
+                if val_data is not None:
+                    val_metrics = self.validate_epoch(
+                        val_data,
+                        batch_size=batch_size,
+                        collate_fn=collate_fn,
+                        num_workers=num_workers,
+                        memfail=memfail,
+                        tensorboard_writer=writer,
+                        verbose=verbose,
+                    )
+
+                if checkpoint_path is not None:
+                    self.save(checkpoint_path)
+
+                if verbose:
+                    train_str = "  ".join(f"{k}={v:.4f}" for k, v in train_metrics.items()
+                                         if k != "memfails")
+                    val_str = ("  ".join(f"{k}={v:.4f}" for k, v in val_metrics.items()
+                                         if k != "memfails")
+                               if val_metrics else "—")
+                    print(f"epoch {self.current_epoch:3d} | train {train_str} | val {val_str}"
+                          + (f" | best {self._best_epoch_so_far}" if val_metrics else ""))
+
+                if patience is not None and val_metrics and (
+                    self.current_epoch - self._best_epoch_so_far >= patience
+                ):
+                    if verbose:
+                        print(f"Early stopping: no improvement for {patience} epochs.")
+                    break
+        finally:
+            if writer is not None:
+                writer.close()
+
+        return self
+
+    def find_lr(
+        self,
+        train_data: Any,
+        start_lr: float = 1e-7,
+        end_lr: float = 10.0,
+        num_iter: int = 100,
+        smooth: float = 0.98,
+        diverge_threshold: float = 4.0,
+        batch_size: Optional[int] = None,
+        collate_fn: Optional[Any] = None,
+        num_workers: int = 0,
+        amp: bool = False,
+    ) -> Dict[str, list]:
+        """Run the learning-rate range test (Smith 2017).
+
+        Sweeps the learning rate geometrically from *start_lr* to *end_lr*
+        over *num_iter* batches, records the smoothed loss at each step, and
+        then **restores the model weights** so the run has no side-effects.
+
+        A fresh optimizer is created for the sweep via a new instance of
+        ``type(self.trainer)`` (or a plain :class:`~torch.optim.Adam` when
+        no trainer is set), so neither the cached optimizer nor the trainer
+        state are affected.
+
+        Parameters
+        ----------
+        train_data : DataLoader or Dataset
+            Data to iterate over — only *num_iter* batches are consumed.
+        start_lr : float, optional
+            Lower bound of the LR sweep.  Default is ``1e-7``.
+        end_lr : float, optional
+            Upper bound of the LR sweep.  Default is ``10.0``.
+        num_iter : int, optional
+            Number of batches to sweep over.  Default is ``100``.
+        smooth : float, optional
+            Exponential moving-average factor for loss smoothing.
+            Higher values produce a smoother curve.  Default is ``0.98``.
+        diverge_threshold : float, optional
+            Stop early when the smoothed loss exceeds
+            ``diverge_threshold × best_loss``.  Default is ``4.0``.
+        batch_size : int, optional
+            Batch size when *train_data* is not already a DataLoader.
+        collate_fn : callable, optional
+            Custom collate function forwarded to the DataLoader.
+        num_workers : int, optional
+            DataLoader worker processes.  Default is ``0``.
+        amp : bool, optional
+            Run the sweep with automatic mixed precision.  Default is
+            ``False``.
+
+        Returns
+        -------
+        dict
+            ``{"lrs": [float, ...], "losses": [float, ...]}`` — one entry
+            per completed step, suitable for plotting.
+
+        Examples
+        --------
+        >>> result = model.find_lr(train_loader, start_lr=1e-6, end_lr=1.0)
+        >>> import matplotlib.pyplot as plt
+        >>> plt.semilogx(result["lrs"], result["losses"]); plt.show()
+        """
+        # save weights — find_lr must be side-effect free
+        saved_state = {k: v.clone() for k, v in self.state_dict().items()}
+        was_training = self.training
+
+        # fresh optimizer via a new trainer instance, or plain Adam
+        if self.trainer is not None:
+            tmp_trainer = type(self.trainer)()
+            tmp_optimizer = tmp_trainer.create_train_objects(self, lr=start_lr)["optimizer"]
+        else:
+            tmp_optimizer = Adam(self.parameters(), lr=start_lr)
+
+        lr_mult = (end_lr / start_lr) ** (1.0 / num_iter)
+        tmp_scaler = torch.cuda.amp.GradScaler() if amp else None
+
+        lrs: list = []
+        losses: list = []
+        avg_loss = 0.0
+        best_loss = None
+
+        loader = _make_loader(train_data, batch_size, collate_fn, shuffle=True,
+                              num_workers=num_workers)
+        self.train()
+        try:
+            for step, batch in enumerate(loader):
+                if step >= num_iter:
+                    break
+
+                current_lr = start_lr * (lr_mult ** step)
+                for pg in tmp_optimizer.param_groups:
+                    pg["lr"] = current_lr
+
+                tmp_optimizer.zero_grad()
+                with torch.autocast(device_type=self.device.type, enabled=amp):
+                    loss, _ = self.training_step(batch)
+
+                if amp:
+                    tmp_scaler.scale(loss).backward()
+                    tmp_scaler.step(tmp_optimizer)
+                    tmp_scaler.update()
+                else:
+                    loss.backward()
+                    tmp_optimizer.step()
+
+                avg_loss = smooth * avg_loss + (1 - smooth) * loss.item()
+                smoothed = avg_loss / (1 - smooth ** (step + 1))  # bias correction
+
+                if best_loss is None or smoothed < best_loss:
+                    best_loss = smoothed
+
+                lrs.append(current_lr)
+                losses.append(smoothed)
+
+                if smoothed > diverge_threshold * best_loss:
+                    break
+        finally:
+            self.load_state_dict(saved_state)
+            self.train(was_training)
+
+        return {"lrs": lrs, "losses": losses}
+
     # ------------------------------------------------------------------
     # Checkpoint save / resume
     # ------------------------------------------------------------------
+
+    def freeze(self, *module_names: str) -> "Mentee":
+        """Freeze parameters whose names start with any of *module_names*.
+
+        The frozen set is persisted in every checkpoint so it is restored
+        automatically by :meth:`resume` and :meth:`resume_training`.
+
+        When a broad ancestor rule is added (e.g. ``"iunet"``) any existing
+        finer-grained rules already in ``_frozen_modules`` that are covered
+        by the new rule are removed to keep the set minimal.
+
+        Parameters
+        ----------
+        *module_names : str
+            Prefix(es) to match against ``model.named_parameters()`` keys.
+            ``"encoder"`` matches ``encoder.weight``, ``encoder.bias``, etc.
+            Glob wildcards are **not** supported — use exact prefixes.
+
+        Returns
+        -------
+        Mentee
+            *self*, for chaining.
+        """
+        for name, param in self.named_parameters():
+            if any(name == m or name.startswith(m + ".") for m in module_names):
+                param.requires_grad_(False)
+        for m in module_names:
+            # Skip if already covered by an existing ancestor rule
+            if any(
+                m == existing or m.startswith(existing + ".")
+                for existing in self._frozen_modules
+            ):
+                continue
+            # Remove any existing finer-grained rules subsumed by this new rule
+            self._frozen_modules = {
+                existing for existing in self._frozen_modules
+                if not (existing == m or existing.startswith(m + "."))
+            }
+            self._frozen_modules.add(m)
+        return self
+
+    def unfreeze(self, *module_names: str) -> "Mentee":
+        """Unfreeze parameters.  Call with no arguments to unfreeze everything.
+
+        Handles ancestor expansion: if ``"iunet"`` is frozen and you call
+        ``unfreeze("iunet.downsampling_layers")``, the ``"iunet"`` rule is
+        replaced by sibling rules covering every other subtree under
+        ``"iunet"``, so the rest stays frozen while
+        ``iunet.downsampling_layers`` becomes trainable.
+
+        Parameters
+        ----------
+        *module_names : str
+            Prefix(es) to unfreeze.  If omitted, all parameters are
+            unfrozen and the frozen-modules registry is cleared.
+
+        Returns
+        -------
+        Mentee
+            *self*, for chaining.
+        """
+        if not module_names:
+            for param in self.parameters():
+                param.requires_grad_(True)
+            self._frozen_modules.clear()
+        else:
+            for name, param in self.named_parameters():
+                if any(name == m or name.startswith(m + ".") for m in module_names):
+                    param.requires_grad_(True)
+            self._frozen_modules = _unfreeze_in_frozen_set(
+                self._frozen_modules, list(module_names), self.layer_names
+            )
+            # Re-apply remaining frozen rules to ensure requires_grad is correct
+            # (ancestor expansion may have re-added sibling rules)
+            for name, param in self.named_parameters():
+                if any(
+                    name == m or name.startswith(m + ".")
+                    for m in self._frozen_modules
+                ):
+                    param.requires_grad_(False)
+        return self
+
+    def select_layers(self, layer_names: List[str]) -> List[str]:
+        r"""Return layer paths that match any entry in *layer_names*, deduplicated
+        and sorted in module traversal order (the same order as
+        :attr:`layer_names`).
+
+        Each entry in *layer_names* is matched with ``re.fullmatch`` against
+        the full dotted path of every module in :attr:`layer_names` (e.g.
+        ``backbone.layer4.0.conv2``).  Plain strings act as exact-match
+        selectors; regex patterns select groups of layers.  The dot separator
+        in layer paths is a literal character — escape it as ``\.`` in
+        patterns to avoid matching unintended paths.  Duplicate matches (a
+        name matched by several patterns) are collapsed to a single entry.
+        The order of the returned list always follows :attr:`layer_names`,
+        never the order of the input patterns.
+
+        Parameters
+        ----------
+        layer_names : list[str]
+            Exact path names or ``re.fullmatch`` patterns applied to the full
+            dotted path (e.g. ``r"backbone\.layer[34]\..*"``).
+
+        Returns
+        -------
+        list[str]
+            Matched layer paths in module order, without duplicates.
+
+        Examples
+        --------
+        For a model whose :attr:`layer_names` is
+        ``['backbone', 'backbone.layer4', 'backbone.layer4.0.conv2', 'head']``::
+
+            # exact match
+            model.select_layers(['backbone.layer4'])
+            # -> ['backbone.layer4']
+
+            # regex: all sub-layers of backbone (dot must be escaped)
+            model.select_layers([r'backbone\..*'])
+            # -> ['backbone.layer4', 'backbone.layer4.0.conv2']
+
+            # input order does not affect output order
+            model.select_layers(['head', 'backbone'])
+            # -> ['backbone', 'head']
+
+            # duplicate matches collapsed to one entry
+            model.select_layers([r'backbone\..*', 'backbone.layer4'])
+            # -> ['backbone.layer4', 'backbone.layer4.0.conv2']
+        """
+        all_names = self.layer_names
+        matched: List[str] = []
+        seen: set = set()
+        for pat in layer_names:
+            hits = [n for n in all_names if re.fullmatch(pat, n)]
+            if not hits:
+                raise ValueError(
+                    f"Pattern {pat!r} did not match any layer name. "
+                    f"Available names: {all_names}"
+                )
+            for n in hits:
+                if n not in seen:
+                    seen.add(n)
+                    matched.append(n)
+        # Re-sort to module order
+        order = {n: i for i, n in enumerate(all_names)}
+        return sorted(matched, key=lambda n: order[n])
+
+    def freeze_layers(self, layers: List[str]) -> "Mentee":
+        """Freeze modules selected by :meth:`select_layers`.
+
+        Parameters
+        ----------
+        layers : list[str]
+            Exact names or ``re.fullmatch`` patterns matched against
+            :attr:`layer_names`.
+
+        Returns
+        -------
+        Mentee
+            *self*, for chaining.
+        """
+        matched = self.select_layers(layers)
+        if matched:
+            self.freeze(*matched)
+        return self
+
+    def unfreeze_layers(self, layers: List[str]) -> "Mentee":
+        """Unfreeze modules selected by :meth:`select_layers`.
+
+        Parameters
+        ----------
+        layers : list[str]
+            Exact names or ``re.fullmatch`` patterns matched against
+            :attr:`layer_names`.
+
+        Returns
+        -------
+        Mentee
+            *self*, for chaining.
+        """
+        matched = self.select_layers(layers)
+        if matched:
+            self.unfreeze(*matched)
+        return self
 
     def save(
         self,
@@ -1152,9 +1738,13 @@ class Mentee(nn.Module):
             "output_schema": self.get_output_schema(),
             "preprocessing_info": self.get_preprocessing_info(),
             "default_loss_fn": self._default_loss_fn,
+        "frozen_modules": list(self._frozen_modules),
+        "layer_names": self.layer_names,
         }
         eff_optimizer    = optimizer    if optimizer    is not None else self.optimizer
         eff_lr_scheduler = lr_scheduler if lr_scheduler is not None else self.lr_scheduler
+        if self._grad_scaler is not None:
+            checkpoint["grad_scaler_state"] = self._grad_scaler.state_dict()
         if eff_optimizer is not None:
             checkpoint["optimizer_state"] = _to_cpu(eff_optimizer.state_dict())
         if eff_lr_scheduler is not None:
@@ -1214,6 +1804,9 @@ class Mentee(nn.Module):
         instance._argv_history = checkpoint["argv_history"]
         instance._best_weights_so_far = checkpoint["best_weights_so_far"]
         instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
+        frozen = checkpoint.get("frozen_modules", [])
+        if frozen:
+            instance.freeze(*frozen)
         instance._inference_state = checkpoint.get("inference_state", {})
         instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
         return instance
@@ -1276,6 +1869,9 @@ class Mentee(nn.Module):
         instance._argv_history = checkpoint["argv_history"]
         instance._best_weights_so_far = checkpoint["best_weights_so_far"]
         instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
+        frozen = checkpoint.get("frozen_modules", [])
+        if frozen:
+            instance.freeze(*frozen)
         instance._inference_state = checkpoint.get("inference_state", {})
         instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
 
@@ -1295,5 +1891,78 @@ class Mentee(nn.Module):
                             param_state[k] = v.to(device)
         if lr_scheduler is not None and "lr_scheduler_state" in checkpoint:
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state"])
+        if "grad_scaler_state" in checkpoint:
+            instance._grad_scaler = torch.cuda.amp.GradScaler()
+            instance._grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
 
         return instance, optimizer, lr_scheduler
+
+
+# ---------------------------------------------------------------------------
+# make_mentee — class decorator
+# ---------------------------------------------------------------------------
+
+def make_mentee(trainer=None):
+    """Class decorator that turns a plain ``nn.Module`` subclass into a ``Mentee``.
+
+    The decorated class gains the full ``Mentee`` API (checkpointing, history,
+    provenance, ``fit``, ``find_lr``, …) without requiring explicit inheritance.
+
+    Parameters
+    ----------
+    trainer : MentorTrainer subclass (uninstantiated), optional
+        If supplied, an instance of this trainer is assigned to ``self.trainer``
+        after construction — only when ``self.trainer`` is not already set by
+        the class's own ``__init__``.
+
+    Examples
+    --------
+    ::
+
+        from mentor import make_mentee
+        from my_module import MyTrainer
+
+        @make_mentee(trainer=MyTrainer)
+        class MyNet(nn.Module):
+            def __init__(self, num_classes=10):
+                super().__init__(num_classes=num_classes)
+                self.fc = nn.Linear(128, num_classes)
+
+            def forward(self, x):
+                return self.fc(x.flatten(1))
+
+    The MRO of the returned class is ``MyNet → nn.Module`` replaced by
+    ``MyNet → Mentee → nn.Module``, so ``super().__init__(...)`` inside
+    ``MyNet.__init__`` correctly reaches ``Mentee.__init__``.
+    """
+    def decorator(cls):
+        original_init = cls.__init__
+        sig = inspect.signature(original_init)
+
+        def new_init(self, *args, **kwargs):
+            # Capture constructor kwargs before calling original init so that
+            # Mentee.__init__ (called via super() inside original_init) stores
+            # them; we then override _constructor_params with the full binding.
+            bound = sig.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            captured = {k: v for k, v in bound.arguments.items() if k != "self"}
+            original_init(self, *args, **kwargs)
+            # Override with the precisely captured params (Mentee's stack-walk
+            # heuristic may miss keyword-only or defaulted arguments).
+            self._constructor_params = captured
+            if trainer is not None and getattr(self, "trainer", None) is None:
+                self.trainer = trainer()
+
+        new_cls = type(
+            cls.__name__,
+            (cls, Mentee),
+            {
+                "__init__": new_init,
+                "__module__": cls.__module__,
+                "__qualname__": cls.__qualname__,
+                "__doc__": cls.__doc__,
+            },
+        )
+        return new_cls
+
+    return decorator

@@ -24,7 +24,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest tests/ -q --cov=mentor --cov-report=term-missing --cov-report=xml --cov-branch
+        run: python -m pytest tests/ -q --cov=mentor --cov-report=term-missing --cov-report=xml --cov-branch
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

@@ -1,20 +1,18 @@
-# mentor
+# mentor : A pytorch training framework for lazy and impatient people
 
 [![License](https://img.shields.io/github/license/anguelos/mentor)](https://github.com/anguelos/mentor/blob/main/LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/anguelos/mentor/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/anguelos/mentor/releases)
 [![Python](https://img.shields.io/badge/python-3.7%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D1.9-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![Last commit](https://img.shields.io/github/last-commit/anguelos/mentor)](https://github.com/anguelos/mentor/commits/main)
 [![Open issues](https://img.shields.io/github/issues/anguelos/mentor)](https://github.com/anguelos/mentor/issues)
 [![Open PRs](https://img.shields.io/github/issues-pr/anguelos/mentor)](https://github.com/anguelos/mentor/pulls)
 [![Repo size](https://img.shields.io/github/repo-size/anguelos/mentor)](https://github.com/anguelos/mentor)
-[![Stars](https://img.shields.io/github/stars/anguelos/mentor?style=social)](https://github.com/anguelos/mentor/stargazers)
-[![Forks](https://img.shields.io/github/forks/anguelos/mentor?style=social)](https://github.com/anguelos/mentor/forks)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000)](https://github.com/psf/black)
 [![Linting: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Type checking: mypy](https://img.shields.io/badge/type%20checking-mypy-2A6DB2)](https://mypy-lang.org/)
-[![Tests: pytest](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)](https://docs.pytest.org/)
-[![Docs: Sphinx RTD](https://img.shields.io/badge/docs-Sphinx%20RTD-blue?logo=sphinx)](https://mentor.readthedocs.io)
+[![Tests](https://github.com/anguelos/mentor/actions/workflows/tests.yml/badge.svg)](https://github.com/anguelos/mentor/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/anguelos/mentor/branch/main/graph/badge.svg)](https://codecov.io/gh/anguelos/mentor)
+[![Docs](https://readthedocs.org/projects/mentor/badge/?version=latest)](https://mentor.readthedocs.io/en/latest/)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)](https://github.com/anguelos/mentor)
 
 A lightweight PyTorch training framework built around a single idea: **a model should carry its own training history**.
@@ -40,15 +38,35 @@ pip install -e mentor/
 
 ## Quick start
 
-### 1. Subclass `Mentee`
+### Option A — Built-in trainer (least code)
+
+Assign a `Classifier` or `Regressor` trainer to `self.trainer` and only implement `forward`:
 
 ```python
-import torch, torch.nn as nn, torch.nn.functional as F
+import torch.nn as nn
+from mentor import Mentee, Classifier
+
+class MyNet(Mentee):
+    def __init__(self, num_classes: int = 10) -> None:
+        super().__init__(num_classes=num_classes)
+        self.fc = nn.Linear(784, num_classes)
+        self.trainer = Classifier()   # supplies training_step + validation_step
+
+    def forward(self, x):
+        return self.fc(x.flatten(1))
+```
+
+### Option B — Custom training step
+
+Override `training_step` and optionally `validation_step` for full control:
+
+```python
+import torch.nn as nn, torch.nn.functional as F
 from mentor import Mentee
 
 class MyNet(Mentee):
     def __init__(self, num_classes: int = 10) -> None:
-        super().__init__(num_classes=num_classes)   # kwargs become constructor_params
+        super().__init__(num_classes=num_classes)
         self.fc = nn.Linear(784, num_classes)
 
     def forward(self, x):
@@ -68,7 +86,7 @@ class MyNet(Mentee):
         return {"accuracy": acc}
 ```
 
-### 2. Train, validate, save
+### Train, validate, save
 
 ```python
 from torch.utils.data import DataLoader
@@ -89,7 +107,7 @@ for epoch in range(20):
     model.save("checkpoint.pt", optimizer=optimizer, lr_scheduler=scheduler)
 ```
 
-### 3. Resume anywhere
+### Resume anywhere
 
 ```python
 model, optimizer, scheduler = MyNet.resume_training(
@@ -104,12 +122,40 @@ print(f"Resuming from epoch {model.current_epoch}")
 
 | Feature | Description |
 |---|---|
-| **Self-contained checkpoints** | Weights, optimizer state, full training & validation history in one `.pt` file |
-| **Automatic provenance** | Git hash, Python & PyTorch versions, hostname, user, and `sys.argv` recorded every epoch |
-| **Best-weights tracking** | `_best_weights_so_far` updated whenever the principal validation metric improves |
-| **Gradient accumulation** | `pseudo_batch_size` in `train_epoch` accumulates gradients over N samples before each optimizer step |
-| **OOM tolerance** | `memfail="ignore"` skips samples that raise `MemoryError` and counts them separately |
-| **tqdm progress bars** | Pass `verbose=True` to `train_epoch` / `validate_epoch`; postfix refreshes every `refresh_freq` iterations |
+| **Automatically resumable** | `save()` + `resume_training()` restore weights, optimizer state, and full history — one line to pick up where you left off, on any machine |
+| **Self-contained checkpoints** | Everything in one `.pt` file: weights, optimizer, LR scheduler, training & validation history, best weights, and inference state |
+| **Automatic TensorBoard** | Pass `tensorboard_writer` to `train_epoch` / `validate_epoch` and all metrics are logged with no extra code |
+| **Automatic provenance** | Git hash, Python & PyTorch versions, hostname, user, and `sys.argv` recorded automatically every epoch |
+| **Best-weights tracking** | Best checkpoint is updated whenever the principal validation metric improves; roll back with one call |
+| **Built-in trainers** | `Classifier` and `Regressor` supply loss, `training_step`, and `validation_step` via composition — only `forward` required |
+| **Gradient accumulation** | `pseudo_batch_size` accumulates gradients over N batches before each optimizer step |
+| **OOM tolerance** | `memfail="ignore"` skips samples that raise `MemoryError` and counts them in the epoch metrics |
+
+---
+
+## How mentor compares
+
+| Feature | mentor | [Lightning](https://lightning.ai) | [HF Trainer](https://huggingface.co/docs/transformers/main_classes/trainer) | [fastai](https://www.fast.ai) | [Ignite](https://pytorch.org/ignite) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Model is plain `nn.Module` | ✅ | ✅ | ✅ | ⚠️ | ✅ |
+| You own the training loop | 👍 | ❌ | ❌ | ❌ | ✅ |
+| Full metric history in checkpoint | ✅ | ❌ | ❌ | ❌ | ❌ |
+| One-call resume (weights + optimizer + history) | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| Model carries its own history | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Automatic provenance (git, env, argv) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Best-epoch weights auto-saved | ✅ | ✅ | ✅ | ✅ | ⚠️ |
+| Inference state bundled in checkpoint | ✅ | ❌ | ❌ | ❌ | ❌ |
+| TensorBoard logging | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Gradient accumulation | ✅ | ✅ | ✅ | ✅ | ⚠️ |
+| OOM-tolerant training | ✅ | ❌ | ❌ | ❌ | ❌ |
+| High-level `fit()` | 👍 | ✅ | ✅ | ✅ | ❌ |
+| Early stopping | 👍 | ✅ | ✅ | ✅ | ✅ |
+| Multi-GPU / distributed training | ❌ | ✅ | ✅ | ✅ | ⚠️ |
+| Mixed precision (AMP) | 👍 | ✅ | ✅ | ✅ | ⚠️ |
+| Callback / hook system | ❌ | ✅ | ✅ | ✅ | ✅ |
+| LR finder | 👍 | ✅ | ❌ | ✅ | ❌ |
+
+✅ built-in · 👍 optional · ⚠️ partial or via plugin · ❌ not supported
 
 ---
 
@@ -120,6 +166,9 @@ print(f"Resuming from epoch {model.current_epoch}")
 ```python
 model.current_epoch   # int — len(train_history)
 model.device          # torch.device — inferred from parameters
+model.optimizer       # cached optimizer (from trainer or create_train_objects)
+model.lr_scheduler    # cached LR scheduler
+model.loss_fn         # cached default loss function
 ```
 
 ### Core methods to implement in your subclass
@@ -128,6 +177,8 @@ model.device          # torch.device — inferred from parameters
 def training_step(self, sample) -> tuple[Tensor, dict[str, float]]: ...
 def validation_step(self, sample)    -> dict[str, float]: ...
 ```
+
+Both are **optional** when `self.trainer` is set — the trainer's classmethods are used instead.
 
 The **first key** of the returned dict is the *principal metric* used for best-checkpoint selection.
 
@@ -165,19 +216,48 @@ All tensors are saved on **CPU** regardless of the training device.
 
 ---
 
-## Included example — CIFAR-10 with ResNet
+## Built-in trainers
+
+`MentorTrainer` is a pure-Python strategy class (not an `nn.Module`) that is composed into a `Mentee` via `self.trainer`.  It separates stateless logic (classmethods) from stateful training objects (cached per-instance):
+
+| Trainer | Default loss | Metrics |
+|---|---|---|
+| `Classifier` | `nn.CrossEntropyLoss` | `loss`, `acc` |
+| `Regressor` | `nn.MSELoss` | `loss`, `rmse` |
+
+```python
+from mentor import Mentee, Classifier, Regressor
+
+class MyClassifier(Mentee):
+    def __init__(self, num_classes=10):
+        super().__init__(num_classes=num_classes)
+        self.fc = nn.Linear(128, num_classes)
+        self.trainer = Classifier()
+    def forward(self, x): return self.fc(x.flatten(1))
+
+class MyRegressor(Mentee):
+    def __init__(self, in_features=8):
+        super().__init__(in_features=in_features)
+        self.fc = nn.Linear(in_features, 1)
+        self.trainer = Regressor()
+    def forward(self, x): return self.fc(x).squeeze(-1)
+```
+
+Custom trainers can be added by subclassing `MentorTrainer` and implementing
+`default_training_step` (classmethod) and `create_train_objects`.
+
+---
+
+## Included examples — CIFAR-10 with ResNet
 
 ```bash
 cd examples/cifar
 
-# first run — downloads data, starts fresh
+# full control — custom training_step
 python train_cifar.py -resume_path ./runs/cifar.pt -epochs 20 -verbose
 
-# subsequent runs — auto-resumes from the same path
-python train_cifar.py -resume_path ./runs/cifar.pt -epochs 20 -verbose
-
-# different architecture
-python train_cifar.py -resume_path ./runs/cifar34.pt -resnet resnet34 -pretrained
+# minimal — uses Classifier trainer
+python train_cifar_classifier.py -resume_path ./runs/cifar2.pt -epochs 20 -verbose
 ```
 
 ---
@@ -218,6 +298,7 @@ Epochs trained: 5
 - **No magic**: `Mentee` is a plain `nn.Module`. Models work identically whether used through the framework or as bare PyTorch modules.
 - **Single file**: one `.pt` file holds everything. No sidecar JSON, no separate history database.
 - **You own the loop**: `train_epoch` and `validate_epoch` are helpers, not a `Trainer` class. Call them however you like.
+- **Composition over inheritance**: trainers are strategy objects assigned to `self.trainer`, not base classes. A model is always a `Mentee`; a trainer is always a `MentorTrainer`.
 - **Reproducibility first**: every change in git hash, environment, or invocation is recorded automatically.
 
 ---
