@@ -30,19 +30,20 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           TOTAL=$(python -c "import json; d=json.load(open('coverage.json')); print(round(d['totals']['percent_covered']))")
-          if [ "$TOTAL" -ge 90 ]; then COLOR=brightgreen
+          if   [ "$TOTAL" -ge 90 ]; then COLOR=brightgreen
           elif [ "$TOTAL" -ge 75 ]; then COLOR=green
           elif [ "$TOTAL" -ge 60 ]; then COLOR=yellow
           else COLOR=red
           fi
-          git fetch origin badges --depth=1 2>/dev/null || git checkout --orphan badges && git rm -rf . --quiet
-          git checkout badges -- . 2>/dev/null || true
+          JSON='{"schemaVersion":1,"label":"coverage","message":"'$TOTAL'%","color":"'$COLOR'"}'
+          git fetch origin badges
+          git checkout badges
           mkdir -p badges
-          echo '{"schemaVersion":1,"label":"coverage","message":"'$TOTAL'%","color":"'$COLOR'"}' > badges/coverage.json
+          echo "$JSON" > badges/coverage.json
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add badges/coverage.json
           git diff --cached --quiet || git commit -m "chore: update coverage badge [$TOTAL%]"
-          git push origin HEAD:badges
+          git push origin badges
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
