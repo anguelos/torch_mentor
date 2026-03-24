@@ -3,8 +3,8 @@
     "permissions": {
       "defaultMode": "acceptEdits",                                                                                                           
       "allow": [                                                                                                                     
-        "Edit",                                                                                                                               
-        "Write",                                                                                                                              
+        "Edit(/home/anguelos_ro/workspace/src/**)",                                                                             
+        "Write(/home/anguelos_ro/workspace/src/**)",                                                                          
         "Bash(source /home/anguelos_ro/venvs/p312/bin/activate:*)",
         "Bash(git status:*)",                                                                                                                 
         "Bash(git log:*)",

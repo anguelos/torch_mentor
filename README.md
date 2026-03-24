@@ -1,9 +1,9 @@
 # mentor : A pytorch training framework for lazy and impatient people
 
-[![License](https://img.shields.io/github/license/anguelos/mentor)](https://github.com/anguelos/mentor/blob/main/LICENSE)
-[![Tests](https://github.com/anguelos/mentor/actions/workflows/tests.yml/badge.svg)](https://github.com/anguelos/mentor/actions/workflows/tests.yml)
-[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/anguelos/mentor/badges/badges/coverage.json)](https://github.com/anguelos/mentor/actions/workflows/tests.yml)
-[![Docs](https://readthedocs.org/projects/mentor/badge/?version=latest)](https://mentor.readthedocs.io/en/latest/)
+[![License](https://img.shields.io/github/license/anguelos/torch_mentor)](https://github.com/anguelos/torch_mentor/blob/main/LICENSE)
+[![Tests](https://github.com/anguelos/torch_mentor/actions/workflows/tests.yml/badge.svg)](https://github.com/anguelos/torch_mentor/actions/workflows/tests.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/anguelos/torch_mentor/badges/badges/coverage.json)](https://github.com/anguelos/torch_mentor/actions/workflows/tests.yml)
+[![Docs](https://readthedocs.org/projects/torch-mentor/badge/?version=latest)](https://torch-mentor.readthedocs.io/en/latest/)
 
 A lightweight PyTorch training framework built around a single idea: **a model should carry its own training history**.
 
@@ -20,7 +20,7 @@ pip install torch-mentor
 Or from source:
 
 ```bash
-git clone https://github.com/anguelos/mentor
+git clone https://github.com/anguelos/torch_mentor
 pip install -e mentor/
 ```
 

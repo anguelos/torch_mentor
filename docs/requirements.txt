@@ -1,5 +1,6 @@
-sphinx-rtd-theme
-sphinx-autodoc-typehints
+sphinx>=7.0,<9
+sphinx-rtd-theme>=2.0
 myst-parser
 sphinx-copybutton
 nbsphinx
+readthedocs-sphinx-ext

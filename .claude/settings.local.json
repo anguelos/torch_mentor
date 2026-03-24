@@ -1,9 +1,12 @@
 {
   "permissions": {
-	  "defaultMode": "acceptEdits",
     "allow": [
-      "Edit",
-      "Write",
+      "Write(/home/anguelos_ro/workspace/src/torch_mentor/.claude/**)",
+      "Edit(/home/anguelos_ro/workspace/src/torch_mentor/.claude/**)",
+      "Write(/home/anguelos_ro/workspace/src/torch_mentor/docs/**)",
+      "Edit(/home/anguelos_ro/workspace/src/torch_mentor/docs/**)",
+      "Edit(/home/anguelos_ro/workspace/src/torch_mentor/**)",
+      "Write(/home/anguelos_ro/workspace/src/torch_mentor/**)",
       "Bash(source /home/anguelos_ro/venvs/p312/bin/activate:*)",
       "Bash(python -m pytest tests/unit_testing/test_mentee.py::test_create_train_objects_scheduler_type tests/unit_testing/test_mentee.py::test_state_dict_architecture_lines_linear -v --tb=long)",
       "Bash(python -m pytest tests/unit_testing/test_mentee.py -q --tb=short)",
@@ -42,7 +45,9 @@
       "Bash(python -m pytest tests/ --cov=mentor --cov-report=term-missing --cov-branch -q)",
       "Bash(python -m pytest tests/)",
       "Bash(pip show:*)",
-      "Skill(update-config)"
-    ]
+      "Skill(update-config)",
+      "Read(//home/anguelos_ro/.claude/**)"
+    ],
+    "defaultMode": "acceptEdits"
   }
 }
