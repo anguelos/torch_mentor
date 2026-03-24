@@ -3,7 +3,7 @@
 ## Installation
 
 ```bash
-pip install torch-mentor
+pip install pytorch-mentor
 ```
 
 Or in editable mode from source:

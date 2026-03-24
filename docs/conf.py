@@ -16,7 +16,7 @@ autodoc_mock_imports = [
     "fargv",
 ]
 
-project   = "torch-mentor"
+project   = "pytorch-mentor"
 author    = "mentor contributors"
 copyright = f"2024, {author}"
 release   = "0.2.2"
@@ -59,14 +59,14 @@ myst_enable_extensions = ["colon_fence", "deflist"]
 
 html_theme         = "sphinx_rtd_theme"
 html_static_path   = ["_static"]
-html_title         = "torch-mentor"
+html_title         = "pytorch-mentor"
 html_show_sourcelink = True
 
 # RTD "Edit on GitHub" button and per-object GitHub source links
 html_context = {
     "display_github": True,
     "github_user":    "anguelos",
-    "github_repo":    "torch_mentor",
+    "github_repo":    "pytorch_mentor",
     "github_version": "main",
     "conf_py_path":   "/docs/",
 }
@@ -103,7 +103,7 @@ def linkcode_resolve(domain, info):
         rel = os.path.relpath(src_file, root)
         if rel.startswith(".."):
             return None
-        return f"https://github.com/anguelos/torch_mentor/blob/main/{rel}{anchor}"
+        return f"https://github.com/anguelos/pytorch_mentor/blob/main/{rel}{anchor}"
     except Exception:
         return None
 
