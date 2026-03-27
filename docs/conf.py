@@ -5,9 +5,14 @@ import sys
 
 sys.path.insert(0, os.path.abspath(".."))
 
+_version: dict = {}
+exec(open("../mentor/version.py").read(), _version)
+
 project = "mentor"
 copyright = "anguelos"
 author = "anguelos"
+release = _version["__version__"]
+version = release
 
 extensions = [
     "sphinx.ext.autodoc",

@@ -528,6 +528,8 @@ class Mentee(nn.Module):
         self.trainer: Optional[Any] = None          # optional MentorTrainer strategy object
         self._grad_scaler: Optional[Any] = None     # torch.cuda.amp.GradScaler, created on first AMP train_epoch
         self._frozen_modules: set = set()           # module name prefixes frozen via freeze()
+        self._lr_coefficients: Dict[str, float] = {}  # layer_name -> LR coefficient (absent = 1.0)
+        self._lr_coefficients: Dict[str, float] = {}  # layer_name -> LR coefficient (absent = 1.0)
 
     @property
     def current_epoch(self) -> int:
@@ -545,7 +547,7 @@ class Mentee(nn.Module):
         """Full dotted paths of every parameter-bearing module, in module order.
 
         These are the names accepted by :meth:`freeze` and :meth:`unfreeze`,
-        and are also the node labels shown by ``mtr_report_file -verbose``.
+        and are also the node labels shown by ``mtr_checkpoint -verbose``.
 
         Returns
         -------
@@ -858,7 +860,7 @@ class Mentee(nn.Module):
         """Describe the output space as a serialisable dict.
 
         The returned dict is embedded in the checkpoint and displayed by
-        ``mtr_report_file``.  Override to self-document what the model
+        ``mtr_checkpoint``.  Override to self-document what the model
         produces.
 
         Returns
@@ -880,7 +882,7 @@ class Mentee(nn.Module):
         """Describe preprocessing requirements as a serialisable dict.
 
         The returned dict is embedded in the checkpoint and displayed by
-        ``mtr_report_file``.  Override to self-document expected inputs.
+        ``mtr_checkpoint``.  Override to self-document expected inputs.
 
         Returns
         -------
@@ -984,15 +986,35 @@ class Mentee(nn.Module):
         >>> train_objs2["loss_fn"] is train_objs["loss_fn"]
         True
         """
+        self._create_train_objects_kwargs: Dict[str, Any] = {
+            "lr": lr, "step_size": step_size, "gamma": gamma,
+            "loss_fn": None, "overwrite_default_loss": False,
+        }
+        param_groups = self._build_param_groups(lr)
         if self.trainer is not None:
-            return self.trainer.create_train_objects(
+            # Let trainer configure the loss function, then override the optimizer
+            # with per-layer param groups so lr_coefficients are respected.
+            self.trainer.create_train_objects(
                 self, lr=lr, step_size=step_size, gamma=gamma,
                 loss_fn=loss_fn, overwrite_default_loss=overwrite_default_loss,
             )
-        # --- trainer-less path: plain Mentee subclass managing its own optimizer ---
+            if param_groups:
+                new_opt = Adam(param_groups, lr=lr)
+                new_sched = StepLR(new_opt, step_size=step_size, gamma=gamma)
+                self.trainer._optimizer = new_opt
+                self.trainer._lr_scheduler = new_sched
+            return {
+                "optimizer": self.trainer.optimizer,
+                "lr_scheduler": self.trainer.lr_scheduler,
+                "loss_fn": self.trainer.loss_fn,
+            }
+        # --- trainer-less path ---
         if loss_fn is not None and (overwrite_default_loss or self._default_loss_fn is None):
             self._default_loss_fn = loss_fn
-        self._optimizer = Adam(self.parameters(), lr=lr)
+        if param_groups:
+            self._optimizer = Adam(param_groups, lr=lr)
+        else:
+            self._optimizer = Adam(self.parameters(), lr=lr)
         self._lr_scheduler = StepLR(self._optimizer, step_size=step_size, gamma=gamma)
         return {"optimizer": self._optimizer, "lr_scheduler": self._lr_scheduler, "loss_fn": self._default_loss_fn}
 
@@ -1572,6 +1594,60 @@ class Mentee(nn.Module):
     # Checkpoint save / resume
     # ------------------------------------------------------------------
 
+    def _build_param_groups(self, lr: float) -> List[Dict[str, Any]]:
+        """Build one optimizer param group per non-frozen layer.
+
+        Each layer in :attr:`layer_names` that is not covered by
+        :attr:`_frozen_modules` and owns at least one trainable direct
+        parameter gets its own group with
+        ``lr = lr * _lr_coefficients.get(name, 1.0)``.
+
+        *Direct* parameters are those registered on the module itself
+        (not on any child module), so every parameter appears in exactly
+        one group.
+
+        Returns an empty list when every layer is frozen or has no
+        trainable direct parameters; the caller should then fall back to
+        a single ``model.parameters()`` group.
+        """
+        groups: List[Dict[str, Any]] = []
+        for layer_name in self.layer_names:
+            if any(
+                layer_name == m or layer_name.startswith(m + ".")
+                for m in self._frozen_modules
+            ):
+                continue
+            module = self.get_submodule(layer_name)
+            params = [
+                p for p in module._parameters.values()
+                if p is not None and p.requires_grad
+            ]
+            if not params:
+                continue
+            coeff = self._lr_coefficients.get(layer_name, 1.0)
+            if layer_name not in self._lr_coefficients:
+                parts = layer_name.split(".")
+                for i in range(len(parts) - 1, 0, -1):
+                    ancestor = ".".join(parts[:i])
+                    if ancestor in self._lr_coefficients:
+                        coeff = self._lr_coefficients[ancestor]
+                        break
+            groups.append({
+                "params": params,
+                "lr": lr * coeff,
+                "_mentor_layer": layer_name,
+                "_mentor_coeff": coeff,
+            })
+        return groups
+
+    def _resolve_optimizer(self, optimizer: Optional[Any] = None) -> Optional[Any]:
+        """Return the effective optimizer: explicit arg > trainer > self._optimizer."""
+        if optimizer is not None:
+            return optimizer
+        if self.trainer is not None:
+            return self.trainer.optimizer
+        return self._optimizer
+
     def _freeze_prefixes(self, *module_names: str) -> "Mentee":
         """Freeze parameters whose names start with any of *module_names*.
 
@@ -1655,6 +1731,138 @@ class Mentee(nn.Module):
                     param.requires_grad_(False)
         return self
 
+    def set_lr_coefficient(
+        self,
+        coefficient: float,
+        patterns: Union[str, List[str]],
+        optimizer: Optional[Any] = None,
+        reset_optimizer_if_needed: bool = False,
+    ) -> "Mentee":
+        r"""Set a per-layer learning-rate coefficient for layers matching *patterns*.
+
+        The effective LR for each layer is ``global_lr * coefficient``.
+        :attr:`_lr_coefficients` is the source of truth; it is persisted
+        in every checkpoint and applied automatically by
+        :meth:`create_train_objects`.
+
+        **Live optimizer update (fast path)**
+        If a resolved optimizer has a per-layer group for the target
+        layer (identified by the ``'_mentor_layer'`` key written by
+        :meth:`create_train_objects`), the group's ``lr`` is updated
+        in-place::
+
+            group['lr'] *= new_coefficient / old_coefficient
+
+        This preserves any decay the LR scheduler has already applied.
+        The edge case ``old_coefficient == 0.0`` cannot be resolved by
+        ratio — a rebuild is required in that situation.
+
+        **Rebuild path**
+        A rebuild (via :meth:`create_train_objects`) is triggered when:
+
+        * the layer has no per-layer group in the optimizer (e.g. the
+          optimizer was created before ``set_lr_coefficient`` was called
+          and the optimizer is a flat single-group instance), or
+        * ``old_coefficient == 0.0`` and ``coefficient != 0.0``.
+
+        When ``reset_optimizer_if_needed=False`` (default) and a rebuild
+        would be needed, :exc:`RuntimeError` is raised instead.
+
+        Parameters
+        ----------
+        coefficient : float
+            Multiplier relative to the global LR.  ``1.0`` restores the
+            default.  ``0.0`` effectively freezes the layer's LR without
+            setting ``requires_grad=False``.
+        patterns : str or list[str]
+            Exact names or ``re.fullmatch`` patterns matched against
+            :attr:`layer_names`.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to update in-place or rebuild.  Defaults to the
+            trainer's or the model's cached optimizer.
+        reset_optimizer_if_needed : bool, optional
+            When ``True`` and an in-place update is not possible, rebuild
+            the optimizer via :meth:`create_train_objects` (Adam state is
+            reset).  When ``False`` (default), raise :exc:`RuntimeError`.
+
+        Returns
+        -------
+        Mentee
+            *self*, for chaining.
+
+        Examples
+        --------
+        >>> model.set_lr_coefficient(0.1, "backbone")          # 10x lower LR
+        >>> model.set_lr_coefficient(0.0, ["backbone"])         # zero out backbone LR
+        >>> model.set_lr_coefficient(1.0, r"backbone\..*")     # restore all sub-layers
+        """
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        matched = self.select_layers(patterns)
+
+        # Collect (layer, old_coeff, new_coeff) triples before mutating state
+        updates = [
+            (layer, self._lr_coefficients.get(layer, 1.0), coefficient)
+            for layer in matched
+        ]
+
+        # Update source of truth
+        for layer, _, new_c in updates:
+            if new_c == 1.0:
+                self._lr_coefficients.pop(layer, None)  # keep dict sparse
+            else:
+                self._lr_coefficients[layer] = new_c
+
+        eff_opt = self._resolve_optimizer(optimizer)
+        if eff_opt is None:
+            return self  # no optimizer yet; coefficients applied on next create_train_objects
+
+        layer_to_group = {
+            g.get("_mentor_layer"): g
+            for g in eff_opt.param_groups
+            if "_mentor_layer" in g
+        }
+
+        needs_rebuild = False
+        for layer, _old_stored, new_c in updates:
+            # Affect the exact group AND all descendant groups (e.g. setting
+            # coefficient for 'backbone' also updates 'backbone.0', 'backbone.1', …)
+            affected = [
+                (g_name, g)
+                for g_name, g in layer_to_group.items()
+                if g_name == layer or g_name.startswith(layer + ".")
+            ]
+            if not affected:
+                # No per-layer group exists for this layer or any descendant
+                needs_rebuild = True
+                continue
+            for g_name, group in affected:
+                old_c = group.get("_mentor_coeff", 1.0)  # effective coeff when group was built
+                if old_c == 0.0 and new_c != 0.0:
+                    needs_rebuild = True
+                    continue
+                # Fast path: scale current lr by ratio of new to old effective coefficient
+                if old_c != 0.0:
+                    group["lr"] = group["lr"] * (new_c / old_c)
+                else:
+                    group["lr"] = self._create_train_objects_kwargs.get("lr", 1e-3) * new_c
+                group["_mentor_coeff"] = new_c
+
+        if needs_rebuild:
+            if reset_optimizer_if_needed:
+                self.create_train_objects(
+                    **getattr(self, "_create_train_objects_kwargs",
+                              {"lr": self._create_train_objects_kwargs.get("lr", 1e-3)})
+                )
+            else:
+                raise RuntimeError(
+                    "Some layers require optimizer restructuring (no per-layer "
+                    "group found, or old coefficient was 0.0). "
+                    "Pass reset_optimizer_if_needed=True to rebuild, or call "
+                    "create_train_objects() explicitly."
+                )
+        return self
+
     def select_layers(self, layer_names: List[str]) -> List[str]:
         r"""Return layer paths that match any entry in *layer_names*, deduplicated
         and sorted in module traversal order (the same order as
@@ -1720,42 +1928,108 @@ class Mentee(nn.Module):
         order = {n: i for i, n in enumerate(all_names)}
         return sorted(matched, key=lambda n: order[n])
 
-    def freeze(self, patterns: List[str]) -> "Mentee":
+    def freeze(
+        self,
+        patterns: Union[str, List[str]],
+        optimizer: Optional[Any] = None,
+        reset_optimizer_if_needed: bool = False,
+    ) -> "Mentee":
         """Freeze layers selected by ``re.fullmatch`` patterns.
+
+        Updates :attr:`_frozen_modules` (source of truth) and sets
+        ``requires_grad=False`` on the affected parameters.  If an
+        optimizer is resolved, the corresponding param groups are left
+        in place but their parameters will produce no gradients so Adam
+        skips them automatically — no restructuring is required.
 
         Parameters
         ----------
-        patterns : list[str]
+        patterns : str or list[str]
             Exact names or ``re.fullmatch`` patterns matched against
             :attr:`layer_names`.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to update.  Defaults to the trainer's or the
+            model's cached optimizer.
+        reset_optimizer_if_needed : bool, optional
+            Accepted for API symmetry with :meth:`unfreeze` and
+            :meth:`set_lr_coefficient`; currently unused because
+            freezing never requires restructuring the optimizer.
 
         Returns
         -------
         Mentee
             *self*, for chaining.
         """
+        if isinstance(patterns, str):
+            patterns = [patterns]
         matched = self.select_layers(patterns)
         if matched:
             self._freeze_prefixes(*matched)
         return self
 
-    def unfreeze(self, patterns: List[str]) -> "Mentee":
+    def unfreeze(
+        self,
+        patterns: Union[str, List[str]],
+        optimizer: Optional[Any] = None,
+        reset_optimizer_if_needed: bool = False,
+    ) -> "Mentee":
         """Unfreeze layers selected by ``re.fullmatch`` patterns.
+
+        Updates :attr:`_frozen_modules` (source of truth) and sets
+        ``requires_grad=True`` on the affected parameters.
+
+        If an optimizer is resolved and the unfrozen layer already has
+        a param group (because it was frozen *after* the optimizer was
+        built), the group's parameters are live again and Adam will
+        initialise their state on the first gradient step — no rebuild
+        needed.  If the layer has *no* group (it was frozen *before*
+        the optimizer was built), a rebuild is required.
 
         Parameters
         ----------
-        patterns : list[str]
+        patterns : str or list[str]
             Exact names or ``re.fullmatch`` patterns matched against
             :attr:`layer_names`.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to inspect and possibly rebuild.  Defaults to
+            the trainer's or the model's cached optimizer.
+        reset_optimizer_if_needed : bool, optional
+            When ``True`` and the unfrozen layer has no param group,
+            :meth:`create_train_objects` is called to rebuild the
+            optimizer (Adam state is reset).  When ``False`` (default)
+            a :exc:`RuntimeError` is raised instead.
 
         Returns
         -------
         Mentee
             *self*, for chaining.
         """
+        if isinstance(patterns, str):
+            patterns = [patterns]
         matched = self.select_layers(patterns)
         if matched:
             self._unfreeze_prefixes(*matched)
+        eff_opt = self._resolve_optimizer(optimizer)
+        if eff_opt is not None and matched:
+            layer_to_group = {
+                g.get("_mentor_layer"): g
+                for g in eff_opt.param_groups
+                if "_mentor_layer" in g
+            }
+            missing = [lay for lay in matched if lay not in layer_to_group]
+            if missing:
+                if reset_optimizer_if_needed:
+                    self.create_train_objects(
+                        **getattr(self, "_create_train_objects_kwargs",
+                                  {"lr": self._create_train_objects_kwargs.get("lr", 1e-3)})
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Layers {missing} have no optimizer param group (they were "
+                        "frozen when the optimizer was built). "
+                        "Pass reset_optimizer_if_needed=True to rebuild, or call "
+                        "create_train_objects() explicitly."
+                    )
         return self
 
 
@@ -1806,6 +2080,7 @@ class Mentee(nn.Module):
             "preprocessing_info": self.get_preprocessing_info(),
             "default_loss_fn": self._default_loss_fn,
         "frozen_modules": list(self._frozen_modules),
+        "lr_coefficients": dict(self._lr_coefficients),
         "layer_names": self.layer_names,
         }
         eff_optimizer    = optimizer    if optimizer    is not None else self.optimizer
@@ -1909,6 +2184,7 @@ class Mentee(nn.Module):
         frozen = checkpoint.get("frozen_modules", [])
         if frozen:
             instance._freeze_prefixes(*frozen)
+        instance._lr_coefficients = checkpoint.get("lr_coefficients", {})
         instance._inference_state = checkpoint.get("inference_state", {})
         instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
         return instance
@@ -2019,6 +2295,7 @@ class Mentee(nn.Module):
         frozen = checkpoint.get("frozen_modules", [])
         if frozen:
             instance._freeze_prefixes(*frozen)
+        instance._lr_coefficients = checkpoint.get("lr_coefficients", {})
         instance._inference_state = checkpoint.get("inference_state", {})
         instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
 

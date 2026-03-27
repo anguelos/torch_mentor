@@ -31,12 +31,12 @@ def cli_checkpoint(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# mtr_report_file
+# mtr_checkpoint
 # ---------------------------------------------------------------------------
 
 def test_report_file_exits_zero(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
+        ["mtr_checkpoint", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
@@ -44,7 +44,7 @@ def test_report_file_exits_zero(cli_checkpoint):
 
 def test_report_file_output_nonempty(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
+        ["mtr_checkpoint", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert len(result.stdout.strip()) > 0
@@ -52,7 +52,7 @@ def test_report_file_output_nonempty(cli_checkpoint):
 
 def test_report_file_contains_class_name(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
+        ["mtr_checkpoint", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert "LeNetMentee" in result.stdout
@@ -60,7 +60,7 @@ def test_report_file_contains_class_name(cli_checkpoint):
 
 def test_report_file_contains_architecture(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
+        ["mtr_checkpoint", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert "Architecture" in result.stdout
@@ -69,7 +69,7 @@ def test_report_file_contains_architecture(cli_checkpoint):
 
 def test_report_file_no_path_exits_nonzero():
     result = subprocess.run(
-        ["mtr_report_file"],
+        ["mtr_checkpoint"],
         capture_output=True, text=True
     )
     assert result.returncode != 0
@@ -77,7 +77,7 @@ def test_report_file_no_path_exits_nonzero():
 
 def test_report_file_contains_epochs(cli_checkpoint):
     result = subprocess.run(
-        ["mtr_report_file", "-path", str(cli_checkpoint), "-no_colors"],
+        ["mtr_checkpoint", "-path", str(cli_checkpoint), "-no_colors"],
         capture_output=True, text=True
     )
     assert "Epochs trained: 1" in result.stdout

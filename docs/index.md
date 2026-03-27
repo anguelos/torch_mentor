@@ -9,6 +9,7 @@ training history, provenance, and inference state together in a single
 :caption: Contents
 
 quickstart
+curriculum_learning
 contributing
 api/index
 examples/index

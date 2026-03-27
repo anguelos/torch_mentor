@@ -2,7 +2,7 @@ import importlib
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 from mentor.mentee import _state_dict_architecture_lines, _unfreeze_in_frozen_set
@@ -74,6 +74,8 @@ def _param_tree_lines(
     state_dict: Dict[str, Any],
     frozen_modules: set,
     layer_names: List[str] = None,
+    lr_coefficients: Optional[Dict[str, float]] = None,
+    terminal_colors: bool = False,
 ) -> List[str]:
     """Render a parameter-module tree from *state_dict*.
 
@@ -168,6 +170,19 @@ def _param_tree_lines(
                 n      = _count_params(full_path)
                 status = _module_status(full_path)
                 tag    = f"  [{status}]"
+                if lr_coefficients is not None:
+                    coeff = _effective_coeff(full_path, lr_coefficients)
+                    coeff_str = f"{coeff:.3g}"
+                    if terminal_colors:
+                        if coeff == 1.0:
+                            lr_tag = f"  {_GRAY}[lr×{coeff_str}]{_RESET}"
+                        elif coeff == 0.0:
+                            lr_tag = f"  {_RED}[lr×{coeff_str}]{_RESET}"
+                        else:
+                            lr_tag = f"  {_GREEN}[lr×{coeff_str}]{_RESET}"
+                    else:
+                        lr_tag = f"  [lr×{coeff_str}]" if coeff != 1.0 else ""
+                    tag += lr_tag
                 out.append(f"{prefix}{connector}{full_path}  ({n:,} params){tag}")
                 _render(val, full_path, child_pfx)
             else:
@@ -183,7 +198,106 @@ def _param_tree_lines(
     return out
 
 
-def get_report_str(path: str, render_colors: bool = False, verbose: bool = False) -> str:
+
+def _effective_coeff(layer_name: str, lr_coefficients: Dict[str, float]) -> float:
+    """Return the LR coefficient for *layer_name*, inheriting from ancestors."""
+    if layer_name in lr_coefficients:
+        return lr_coefficients[layer_name]
+    parts = layer_name.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        ancestor = ".".join(parts[:i])
+        if ancestor in lr_coefficients:
+            return lr_coefficients[ancestor]
+    return 1.0
+
+
+def _curriculum_lines(
+    state_dict: Dict[str, Any],
+    frozen_modules: set,
+    lr_coefficients: Dict[str, float],
+    layer_names: Optional[List[str]],
+    terminal_colors: bool,
+) -> List[str]:
+    """Render the Curriculum training summary section."""
+    # helpers
+    def _is_layer_frozen(layer: str) -> bool:
+        return any(layer == m or layer.startswith(m + ".") for m in frozen_modules)
+
+    def _direct_numel(layer: str) -> int:
+        total = 0
+        for k, t in state_dict.items():
+            if isinstance(t, torch.Tensor) and ".".join(k.split(".")[:-1]) == layer:
+                total += t.numel()
+        return total
+
+    total_numel = sum(
+        t.numel() for t in state_dict.values() if isinstance(t, torch.Tensor)
+    )
+
+    layers = layer_names if layer_names else []
+    total_layers = len(layers)
+
+    # trivial check
+    any_frozen = bool(frozen_modules)
+    any_nondefault_coeff = any(
+        _effective_coeff(ln, lr_coefficients) != 1.0 for ln in layers
+    ) if layers else bool(lr_coefficients)
+
+    prefix = "Curriculum training:"
+    if not any_frozen and not any_nondefault_coeff:
+        na = f"{_GRAY}N/A{_RESET}" if terminal_colors else "N/A"
+        return [f"{prefix} {na}"]
+
+    lines = [prefix]
+
+    # frozen stats
+    if any_frozen and total_layers > 0:
+        frozen_layers = sum(1 for ln in layers if _is_layer_frozen(ln))
+        frozen_numel = sum(
+            t.numel()
+            for k, t in state_dict.items()
+            if isinstance(t, torch.Tensor) and any(
+                k == m or k.startswith(m + ".")
+                for m in frozen_modules
+            )
+        )
+        pct_params  = 100.0 * frozen_numel  / total_numel  if total_numel  else 0.0
+        pct_layers  = 100.0 * frozen_layers / total_layers if total_layers else 0.0
+        if terminal_colors:
+            pct_p_str = f"{_RED}{pct_params:.1f}%{_RESET}"
+            pct_l_str = f"{_RED}{pct_layers:.1f}%{_RESET}"
+        else:
+            pct_p_str = f"{pct_params:.1f}%"
+            pct_l_str = f"{pct_layers:.1f}%"
+        lines.append(f"  Frozen: {pct_p_str} of parameters, {pct_l_str} of layers")
+
+    # lr coefficient distribution
+    if layers and any_nondefault_coeff:
+        coeff_layer_count: Dict[float, int]   = {}
+        coeff_param_count: Dict[float, int]   = {}
+        for ln in layers:
+            c = _effective_coeff(ln, lr_coefficients)
+            coeff_layer_count[c] = coeff_layer_count.get(c, 0) + 1
+            coeff_param_count[c] = coeff_param_count.get(c, 0) + _direct_numel(ln)
+        for coeff in sorted(coeff_layer_count):
+            pct_l = 100.0 * coeff_layer_count[coeff] / total_layers if total_layers else 0.0
+            pct_p = 100.0 * coeff_param_count[coeff] / total_numel  if total_numel  else 0.0
+            coeff_str = f"{coeff:.3g}"
+            if terminal_colors:
+                if coeff == 1.0:
+                    label = f"{_GRAY}LR ×{coeff_str}{_RESET}"
+                elif coeff == 0.0:
+                    label = f"{_RED}LR ×{coeff_str}{_RESET}"
+                else:
+                    label = f"{_GREEN}LR ×{coeff_str}{_RESET}"
+            else:
+                label = f"LR ×{coeff_str}"
+            lines.append(f"  {label}: {pct_l:.1f}% of layers, {pct_p:.1f}% of parameters")
+
+    return lines
+
+
+def get_report_str(path: str, terminal_colors: bool = True, verbose: bool = False, render_colors: Optional[bool] = None) -> str:
     """Generate a human-readable text report for a mentor checkpoint file.
 
     Loads the checkpoint with ``map_location=\"cpu\"`` so no GPU is required.
@@ -212,6 +326,8 @@ def get_report_str(path: str, render_colors: bool = False, verbose: bool = False
     >>> print(get_report_str(\"model.pt\"))
     >>> print(get_report_str(\"model.pt\", render_colors=True))
     """
+    if render_colors is not None:
+        terminal_colors = render_colors
     path = Path(path)
     lines: List[str] = []
 
@@ -237,6 +353,15 @@ def get_report_str(path: str, render_colors: bool = False, verbose: bool = False
     state_dict = checkpoint.get("state_dict", {})
     lines.append("Architecture (inferred from state_dict):")
     lines += _state_dict_architecture_lines(state_dict)
+    lines.append("")
+
+    # --- curriculum training ---
+    frozen_modules_set = set(checkpoint.get("frozen_modules", []))
+    lr_coefficients    = checkpoint.get("lr_coefficients", {})
+    layer_names_cp     = checkpoint.get("layer_names", None)
+    lines += _curriculum_lines(
+        state_dict, frozen_modules_set, lr_coefficients, layer_names_cp, terminal_colors
+    )
     lines.append("")
 
     # --- training history ---
@@ -322,15 +447,20 @@ def get_report_str(path: str, render_colors: bool = False, verbose: bool = False
 
     # --- verbose: layer tree ---
     if verbose:
-        frozen_modules = set(checkpoint.get("frozen_modules", []))
-        layer_names = checkpoint.get("layer_names", None)
-        tree_lines = _param_tree_lines(state_dict, frozen_modules, layer_names)
+        frozen_modules_v = set(checkpoint.get("frozen_modules", []))
+        layer_names_v = checkpoint.get("layer_names", None)
+        lr_coefficients_v = checkpoint.get("lr_coefficients", {})
+        tree_lines = _param_tree_lines(
+            state_dict, frozen_modules_v, layer_names_v,
+            lr_coefficients=lr_coefficients_v or None,
+            terminal_colors=terminal_colors,
+        )
         lines.append("Layer tree:")
         lines += tree_lines
         lines.append("")
 
     report = "\n".join(lines)
-    if render_colors:
+    if terminal_colors:
         report = _colorize_report(report)
     return report
 
@@ -374,22 +504,57 @@ def _apply_layer_flags(
     model.save(path)
 
 
-def main_report_file() -> None:
+
+def _apply_lr_coefficient(path: str, patterns: List[str], coefficient: float) -> None:
+    """Load a checkpoint, apply a LR coefficient to matched layers, and save it back.
+
+    Parameters
+    ----------
+    path : str
+        Path to the ``.pt`` checkpoint file.  The file is overwritten in place.
+    patterns : list of str
+        ``re.fullmatch`` patterns selecting layers (passed to
+        :meth:`~mentor.Mentee.set_lr_coefficient`).
+    coefficient : float
+        LR multiplier to assign to the matched layers.
+
+    Raises
+    ------
+    ValueError
+        If any pattern does not match any layer name (propagated from
+        :meth:`~mentor.Mentee.select_layers`).
+    """
+    from mentor.mentee import Mentee
+
+    model: Mentee = Mentee.resume(path)
+    model.set_lr_coefficient(coefficient, patterns)
+    model.save(path)
+
+
+def main_checkpoint() -> None:
     from fargv import fargv
     params = {
-        "path":      ["",      "Path to mentor checkpoint file"],
-        "no_colors": [False,   "Disable terminal colour output"],
-        "verbose":   [False,   "Print extra detail"],
-        "freeze":    [set([]), "Layer name patterns to freeze (regex, e.g. backbone\\.layer4\\..*)"],
-        "unfreeze":  [set([]), "Layer name patterns to unfreeze (regex)"],
+        "path":             ["",      "Path to mentor checkpoint file"],
+        "no_colors":        [False,   "Disable terminal colour output"],
+        "verbose":          [False,   "Print extra detail"],
+        "freeze":           [set([]), "Layer name patterns to freeze (regex, e.g. backbone\\.layer4\\..*)"],
+        "unfreeze":         [set([]), "Layer name patterns to unfreeze (regex)"],
+        "modify_lr_layers": [set([]), "Layer name patterns whose LR coefficient will be set to -lr_coef"],
+        "lr_coef":          [1.0,    "LR coefficient to assign to -modify_lr_layers (must not be 1.0 when -modify_lr_layers is empty)"],
     }
     p, _ = fargv(params)
     if not p.path:
         print("Error: -path is required.")
         raise SystemExit(1)
 
-    freeze_patterns   = list(p.freeze)
-    unfreeze_patterns = list(p.unfreeze)
+    if p.lr_coef != 1.0 and not p.modify_lr_layers:
+        print("Error: -lr_coef is set to a non-default value but -modify_lr_layers is empty. "
+              "Specify at least one layer pattern with -modify_lr_layers.")
+        raise SystemExit(1)
+
+    freeze_patterns    = list(p.freeze)
+    unfreeze_patterns  = list(p.unfreeze)
+    lr_layer_patterns  = list(p.modify_lr_layers)
 
     if freeze_patterns or unfreeze_patterns:
         try:
@@ -398,7 +563,14 @@ def main_report_file() -> None:
             print(f"Error: {exc}")
             raise SystemExit(1)
 
-    report = get_report_str(p.path, render_colors=not p.no_colors, verbose=p.verbose)
+    if lr_layer_patterns:
+        try:
+            _apply_lr_coefficient(p.path, lr_layer_patterns, p.lr_coef)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            raise SystemExit(1)
+
+    report = get_report_str(p.path, terminal_colors=not p.no_colors, verbose=p.verbose)
     print(report)
 
 

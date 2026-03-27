@@ -58,7 +58,7 @@ pytest tests/unit_testing/test_mentee.py::test_create_train_objects -v
 | `tests/unit_testing/` | Individual classes and functions in isolation |
 | `tests/checkpoint/` | Checkpoint save / resume round-trips |
 | `tests/integration/` | End-to-end training loops |
-| `tests/cli/` | `mtr_report_file` and `mtr_plot_file_hist` entry-points |
+| `tests/cli/` | `mtr_checkpoint` and `mtr_plot_file_hist` entry-points |
 
 ## Building the docs locally
 

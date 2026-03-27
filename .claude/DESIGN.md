@@ -240,7 +240,7 @@ so training continues with the same momentum buffers.
 human-readable text report from a checkpoint without instantiating the model.
 
 CLI entry points (registered in `setup.py`):
-- `mtr_report_file -path run.pt`  (add `-no_colors` to suppress ANSI)
+- `mtr_checkpoint -path run.pt`  (add `-no_colors` to suppress ANSI)
 - `mtr_plot_file_hist -paths a.pt b.pt -values train/loss validate/acc`
 
 ---

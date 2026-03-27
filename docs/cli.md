@@ -3,12 +3,12 @@
 mentor installs two command-line entry points for working with checkpoint
 files without writing any Python.
 
-## mtr_report_file
+## mtr_checkpoint
 
 Print a structured report for a checkpoint file.
 
 ```bash
-mtr_report_file -path model.pt
+mtr_checkpoint -path model.pt
 ```
 
 | Argument   | Default      | Description                          |

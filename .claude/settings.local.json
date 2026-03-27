@@ -47,7 +47,9 @@
       "Bash(pip show:*)",
       "Skill(update-config)",
       "Read(//home/anguelos_ro/.claude/**)",
-      "Bash(head -20 echo \"---\" grep \"ruff\\\\|black\" /home/anguelos_ro/workspace/src/torch_mentor/setup.py)"
+      "Bash(head -20 echo \"---\" grep \"ruff\\\\|black\" /home/anguelos_ro/workspace/src/torch_mentor/setup.py)",
+      "Bash(python -c \"import mentor; print\\(mentor.__version__\\)\")",
+      "Bash(python -m pytest tests/unit_testing/ -q)"
     ],
     "defaultMode": "acceptEdits"
   }

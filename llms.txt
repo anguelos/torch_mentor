@@ -1,0 +1,257 @@
+# torch_mentor — LLM Reference
+
+torch_mentor is designed for **progressive adoption with escape hatches at every level**: use only what you need — a self-contained checkpoint, a built-in trainer, or the full stack — without being locked in.
+
+torch_mentor provides `Mentee`, a `torch.nn.Module` subclass that adds a
+full training loop, checkpointing, provenance tracking, layer freezing, and
+inference state management.  Import as `import mentor as mtr`.
+
+Public names: `mtr.Mentee`, `mtr.make_mentee`, `mtr.MentorTrainer`,
+`mtr.Classifier`, `mtr.Regressor`.
+
+---
+
+## Two ways to create a Mentee model
+
+### 1 — Subclass Mentee directly
+
+```python
+import mentor as mtr
+import torch, torch.nn as nn, torch.nn.functional as F
+
+class MyModel(mtr.Mentee):
+    def __init__(self, num_classes: int = 10) -> None:
+        super().__init__()          # constructor params captured automatically
+        self.fc = nn.Linear(512, num_classes)
+
+    def forward(self, x):
+        return self.fc(x)
+
+    def training_step(self, batch, loss_fn=None):
+        x, y = batch
+        logits = self(x.to(self.device))
+        loss = F.cross_entropy(logits, y.to(self.device))
+        return loss, {"loss": loss.item()}
+```
+
+`training_step` must return `(loss_tensor, metrics_dict)`.
+The **first key** of `metrics_dict` is the principal metric used for
+best-model tracking during `validate_epoch`.
+
+`super().__init__()` with no arguments auto-captures all constructor
+parameters via stack inspection.  Explicit forwarding
+(`super().__init__(num_classes=num_classes)`) also works.
+
+### 2 — Decorator `make_mentee` (zero inheritance change)
+
+Use when you want to keep an existing `nn.Module` subclass untouched:
+
+```python
+from mentor import make_mentee, Classifier
+
+@make_mentee(trainer=Classifier)   # trainer= is optional
+class MyNet(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.fc = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        return self.fc(x.flatten(1))
+```
+
+`make_mentee` rewrites the MRO to `MyNet → Mentee → nn.Module` and injects
+a trainer instance so no `training_step` override is needed.
+
+---
+
+## Trainer strategy objects
+
+Trainers bundle the loss, training step, and optimizer creation so the model
+only needs `forward`.  Assign `self.trainer` in `__init__` or via
+`@make_mentee(trainer=...)`.
+
+| Trainer | Loss | Metrics |
+|---|---|---|
+| `Classifier()` | `nn.CrossEntropyLoss` | `loss`, `acc` (top-1) |
+| `Regressor()` | `nn.MSELoss` | `loss`, `rmse` |
+
+Custom trainer: subclass `mtr.MentorTrainer`, implement `default_training_step`
+(classmethod) and `create_train_objects`.
+
+```python
+class MyNet(mtr.Mentee):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.fc = nn.Linear(128, num_classes)
+        self.trainer = mtr.Classifier()   # no training_step needed
+
+    def forward(self, x):
+        return self.fc(x.flatten(1))
+```
+
+`model.optimizer`, `model.lr_scheduler`, `model.loss_fn` all delegate to the
+trainer when one is set.
+
+---
+
+## Training workflow
+
+### High-level: `fit`
+
+```python
+model = MyNet(num_classes=10).to("cuda")
+model.fit(
+    train_data,           # Dataset or DataLoader
+    val_data=val_data,    # optional
+    epochs=20,
+    lr=1e-3,
+    batch_size=64,
+    checkpoint_path="best.pt",
+    patience=5,           # early stopping
+    verbose=True,
+    amp=True,             # automatic mixed precision
+)
+```
+
+`fit` calls `create_train_objects` automatically if no optimizer exists yet.
+Returns `self` for chaining.
+
+### Low-level: manual loop
+
+```python
+train_objs = model.create_train_objects(lr=1e-3, step_size=10, gamma=0.1)
+optimizer    = train_objs["optimizer"]      # Adam
+lr_scheduler = train_objs["lr_scheduler"]  # StepLR
+
+while model.current_epoch < target_epochs:
+    train_metrics = model.train_epoch(
+        train_data,
+        optimizer,
+        lr_scheduler=lr_scheduler,
+        pseudo_batch_size=32,   # gradient accumulation
+        num_workers=4,
+        amp=True,
+        verbose=True,
+    )
+    val_metrics = model.validate_epoch(val_data, num_workers=4)
+    model.save("checkpoint.pt")   # optimizer/scheduler saved automatically
+```
+
+`model.current_epoch` increments after each `train_epoch` call.
+
+---
+
+## Resuming training
+
+```python
+import os
+if os.path.isfile("checkpoint.pt"):
+    model, optimizer, lr_scheduler = MyModel.resume_training(
+        "checkpoint.pt", device="cuda", lr=1e-3, step_size=10, gamma=0.1
+    )
+else:
+    model = MyModel()
+    ...
+```
+
+`resume_training` restores weights, epoch counter, and optimizer/scheduler
+state.  The `while model.current_epoch < target_epochs` loop resumes
+correctly.
+
+---
+
+## Inference-only loading
+
+```python
+model = MyModel.resume("checkpoint.pt", device="cuda")
+model.eval()
+with torch.no_grad():
+    output = model(x)
+```
+
+`resume` is a classmethod that re-instantiates the model from its stored
+constructor params, loads weights, and puts it in eval mode.
+
+---
+
+## Layer selection, freezing, and unfreezing
+
+`freeze` and `unfreeze` accept a list of exact names or `re.fullmatch`
+patterns matched against `model.layer_names`.
+
+```python
+model.layer_names   # -> ['backbone', 'backbone.layer4', 'head']
+
+model.freeze(["backbone"])                   # freeze by exact name
+model.freeze([r"backbone\.layer[34]\..*"])   # freeze by regex
+model.unfreeze(["backbone.layer4"])          # unfreeze one sub-layer
+model.unfreeze(["backbone"])                 # unfreeze whole subtree
+```
+
+`select_layers(patterns)` returns the matched names without modifying state —
+useful for inspection before freezing.
+
+Frozen state is preserved across `save`/`resume` cycles.  Both methods return
+`self` for chaining.
+
+---
+
+## Inference state
+
+Attach arbitrary picklable objects to the checkpoint:
+
+```python
+model.register_inference_state("classes", ["cat", "dog"])
+# ... after resume:
+classes = model.get_inference_state("classes")
+```
+
+---
+
+## Optional overridable methods
+
+| Method | When to override |
+|---|---|
+| `validation_step(batch, loss_fn)` | When validation differs from training (e.g. no augmentation, TTA). Default delegates to `training_step`. |
+| `preprocess(raw_input)` | To make the checkpoint self-contained; called by inference pipelines. |
+| `decode(model_output)` | To convert raw tensor output to human-readable result. |
+| `get_output_schema()` | Return dict describing the output space; stored in checkpoint. |
+| `get_preprocessing_info()` | Return dict describing normalisation stats; stored in checkpoint. |
+
+---
+
+## Key properties
+
+| Property | Type | Description |
+|---|---|---|
+| `model.current_epoch` | `int` | Number of completed training epochs |
+| `model.device` | `torch.device` | Device of model parameters |
+| `model.layer_names` | `list[str]` | Dotted paths of all parameter-bearing modules |
+| `model.optimizer` | optional | Optimizer from last `create_train_objects` |
+| `model.lr_scheduler` | optional | Scheduler from last `create_train_objects` |
+| `model.loss_fn` | optional | Default loss from last `create_train_objects` |
+
+---
+
+## Gradient accumulation and AMP
+
+`pseudo_batch_size` in `train_epoch`/`fit` controls how many samples are
+accumulated before `optimizer.step()`.  Set it to the effective batch size
+you want; the DataLoader can use `batch_size=1`.
+
+`amp=True` enables `torch.cuda.amp` automatic mixed precision with a
+`GradScaler`.  Scaler state is saved and restored across checkpoints.
+
+---
+
+## What torch_mentor does NOT do
+
+- Does not provide optimizer or scheduler type choices beyond Adam + StepLR;
+  pass custom objects directly to `train_epoch` if needed.
+- Does not handle multi-GPU / DDP automatically.
+- When no trainer is set, does not compute the loss itself — `training_step`
+  must return `(loss_tensor, metrics_dict)` and handle the loss directly.
+  When a trainer is set (`Classifier`, `Regressor`, or a custom
+  `MentorTrainer`), the trainer registers a default loss functor via
+  `create_train_objects`; passing `loss_fn=None` to `train_epoch` then
+  uses that functor automatically.

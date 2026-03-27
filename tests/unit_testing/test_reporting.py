@@ -108,14 +108,14 @@ def test_get_report_str_contains_architecture_section(tmp_path, lenet):
 
 def test_get_report_str_no_history_section(tmp_path, lenet):
     p = _make_checkpoint_file(tmp_path, lenet)
-    report = get_report_str(p)
+    report = get_report_str(p, terminal_colors=False)
     assert "Epochs trained: 0" in report
 
 
 def test_get_report_str_with_train_history(tmp_path, trained_model):
     model, opt, sched = trained_model
     p = _make_checkpoint_file(tmp_path, model, opt, sched)
-    report = get_report_str(p)
+    report = get_report_str(p, terminal_colors=False)
     assert "Epochs trained: 1" in report
     assert "First epoch" in report
 
@@ -123,20 +123,20 @@ def test_get_report_str_with_train_history(tmp_path, trained_model):
 def test_get_report_str_with_validate_history(tmp_path, trained_model):
     model, opt, sched = trained_model
     p = _make_checkpoint_file(tmp_path, model, opt, sched)
-    report = get_report_str(p)
+    report = get_report_str(p, terminal_colors=False)
     assert "Epochs validated: 1" in report
 
 
 def test_get_report_str_optimizer_present(tmp_path, trained_model):
     model, opt, sched = trained_model
     p = _make_checkpoint_file(tmp_path, model, opt, sched)
-    report = get_report_str(p)
+    report = get_report_str(p, terminal_colors=False)
     assert "Optimizer state:    present" in report
 
 
 def test_get_report_str_optimizer_absent(tmp_path, lenet):
     p = _make_checkpoint_file(tmp_path, lenet)
-    report = get_report_str(p)
+    report = get_report_str(p, terminal_colors=False)
     assert "Optimizer state:    absent" in report
 
 
@@ -392,7 +392,7 @@ def test_get_report_str_with_history(tmp_path, trained_model):
     model, opt, sched = trained_model
     path = tmp_path / "trained.pt"
     model.save(path, optimizer=opt, lr_scheduler=sched)
-    report = get_report_str(str(path))
+    report = get_report_str(str(path), terminal_colors=False)
     assert "Epochs trained:" in report
     assert "Epochs validated:" in report
     assert "Optimizer state:" in report

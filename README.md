@@ -11,6 +11,8 @@
 
 A lightweight PyTorch training framework built around a single idea: **a model should carry its own training history**.
 
+Designed for **progressive adoption**: use only what you need — a single feature such as self-contained checkpointing, a built-in trainer that removes all boilerplate, or anything in between. Every abstraction level has an escape hatch to the level below; you are never locked in.
+
 `Mentee` is a `torch.nn.Module` subclass that transparently records every epoch of training, validation metrics, software environment, and command-line invocation — all saved into a single `.pt` checkpoint.  Resuming on a different machine, reporting on a run, or rolling back to the best epoch requires no extra bookkeeping.
 
 ---
@@ -144,6 +146,7 @@ print(f"Resuming from epoch {model.current_epoch}")
 | OOM-tolerant training | ✅ | ❌ | ❌ | ❌ | ❌ |
 | High-level `fit()` | 👍 | ✅ | ✅ | ✅ | ❌ |
 | Early stopping | 👍 | ✅ | ✅ | ✅ | ✅ |
+| Framework integration | opt-in | opt-out | opt-out | opt-out | opt-in |
 | Multi-GPU / distributed training | ❌ | ✅ | ✅ | ✅ | ⚠️ |
 | Mixed precision (AMP) | 👍 | ✅ | ✅ | ✅ | ⚠️ |
 | Callback / hook system | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -261,7 +264,7 @@ python train_cifar_classifier.py -resume_path ./runs/cifar2.pt -epochs 20 -verbo
 After installation a command-line tool is registered:
 
 ```bash
-mtr_report_file -path ./runs/cifar.pt
+mtr_checkpoint -path ./runs/cifar.pt
 ```
 
 Example output:
@@ -294,6 +297,7 @@ Epochs trained: 5
 - **You own the loop**: `train_epoch` and `validate_epoch` are helpers, not a `Trainer` class. Call them however you like.
 - **Composition over inheritance**: trainers are strategy objects assigned to `self.trainer`, not base classes. A model is always a `Mentee`; a trainer is always a `MentorTrainer`.
 - **Reproducibility first**: every change in git hash, environment, or invocation is recorded automatically.
+- **Progressive adoption with escape hatches**: use just one feature or the full stack. Every abstraction level drops cleanly to the one below — plain , trainer strategy, or  — without fighting the framework.
 
 ---
 
