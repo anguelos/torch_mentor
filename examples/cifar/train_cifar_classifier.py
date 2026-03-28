@@ -64,6 +64,11 @@ def main():
         _to = model.create_train_objects(lr=p.lr)
         opt, sched = _to["optimizer"], _to["lr_scheduler"]
 
+    if model.current_epoch == 0:
+        vl = model.validate_epoch(val_loader, verbose=p.verbose)
+        print(f"epoch   0  val loss={vl['loss']:.4f} acc={vl['acc']:.4f}  (baseline)")
+        model.save(p.resume_path, optimizer=opt, lr_scheduler=sched)
+
     for _ in range(p.epochs):
         tr = model.train_epoch(train_loader, opt, lr_scheduler=sched, verbose=p.verbose)
         vl = model.validate_epoch(val_loader, verbose=p.verbose)

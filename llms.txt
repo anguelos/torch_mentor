@@ -244,14 +244,36 @@ you want; the DataLoader can use `batch_size=1`.
 
 ---
 
-## What torch_mentor does NOT do
+## Opt-in depth
 
-- Does not provide optimizer or scheduler type choices beyond Adam + StepLR;
-  pass custom objects directly to `train_epoch` if needed.
+torch_mentor has three adoption levels.  Each adds automation; each has an
+escape hatch to the level below.
+
+**Level 1 — vanilla Mentee (no trainer)**
+
+Implement `training_step` and optionally `validation_step` yourself.  You
+own the loss, the optimizer creation, and the loop.  `train_epoch`,
+checkpointing, history, and provenance still work; the framework does not
+touch your loss or optimizer type.
+
+**Level 2 — Mentee with a built-in trainer**
+
+Assign `self.trainer = Classifier()` or `self.trainer = Regressor()` in
+`__init__`.  The trainer supplies `training_step`, `validation_step`,
+the default loss, and Adam + StepLR via `create_train_objects`.  Only
+`forward` is required.
+
+**Level 3 — Mentee with a custom trainer**
+
+Subclass `MentorTrainer` and implement `default_training_step` (classmethod)
+and `create_train_objects`.  This is the correct extension point for custom
+optimizers, schedulers, or loss functions — not passing objects directly to
+`train_epoch`.
+
+---
+
+## Hard limitations
+
 - Does not handle multi-GPU / DDP automatically.
-- When no trainer is set, does not compute the loss itself — `training_step`
-  must return `(loss_tensor, metrics_dict)` and handle the loss directly.
-  When a trainer is set (`Classifier`, `Regressor`, or a custom
-  `MentorTrainer`), the trainer registers a default loss functor via
-  `create_train_objects`; passing `loss_fn=None` to `train_epoch` then
-  uses that functor automatically.
+- `make_mentee` is a class decorator; it rewrites the MRO of a class
+  definition and cannot be applied to an already-constructed instance.

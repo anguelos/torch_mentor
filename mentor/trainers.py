@@ -129,7 +129,20 @@ class MentorTrainer(ABC):
         loss : torch.Tensor
             Scalar differentiable loss.
         metrics : dict[str, float]
-            Scalar metrics; the first key is the principal metric.
+            Scalar metrics.  **The first key is the principal metric**
+            used by :meth:`~mentor.Mentee.validate_epoch` to select the
+            best checkpoint.  It must be a metric where **higher is
+            better** (e.g. accuracy, F1, R²).  Never put a loss or error
+            value first — those are lower-is-better and would cause the
+            untrained model to be permanently recorded as "best".
+
+            Correct::
+
+                return loss, {"acc": acc, "loss": loss.item()}   # acc first
+
+            Wrong::
+
+                return loss, {"loss": loss.item(), "acc": acc}   # loss first!
         """
 
     @classmethod
@@ -248,7 +261,7 @@ class Classifier(MentorTrainer):
         eff_fn = loss_fn if loss_fn is not None else F.cross_entropy
         loss = eff_fn(logits, y)
         acc = (logits.argmax(1) == y).float().mean().item()
-        return loss, {"loss": loss.item(), "acc": acc}
+        return loss, {"acc": acc, "loss": loss.item()}
 
     def create_train_objects(
         self,
@@ -326,6 +339,22 @@ class Regressor(MentorTrainer):
         eff_fn = loss_fn if loss_fn is not None else F.mse_loss
         loss = eff_fn(pred, y)
         return loss, {"loss": loss.item(), "rmse": loss.item() ** 0.5}
+
+    @classmethod
+    def default_validate_step(
+        cls,
+        model: Any,
+        batch: Any,
+        loss_fn: Optional[Any] = None,
+    ) -> Dict[str, float]:
+        """MSE loss and RMSE metric, with ``neg_rmse`` as principal metric.
+
+        Returns ``neg_rmse`` (= ``-rmse``) as the first key so that
+        :meth:`~mentor.Mentee.validate_epoch` can select the best epoch
+        by maximising it (higher neg_rmse <-> lower RMSE).
+        """
+        _, metrics = cls.default_training_step(model, batch, loss_fn)
+        return {"neg_rmse": -metrics["rmse"], **metrics}
 
     def create_train_objects(
         self,

@@ -106,3 +106,45 @@ def make_loader(
     y = torch.randint(0, num_classes, (n_samples,), generator=g)
     return DataLoader(TensorDataset(x, y), batch_size=batch_size,
                       shuffle=False, num_workers=0)
+
+
+# ---------------------------------------------------------------------------
+# Plain nn.Module for wrap_as_mentee tests (must be importable at module level)
+# ---------------------------------------------------------------------------
+
+class PlainNet(nn.Module):
+    """Minimal nn.Module with no Mentee dependency — used by wrap_as_mentee tests."""
+
+    def __init__(self, in_features: int = 4) -> None:
+        super().__init__()
+        self.fc = nn.Linear(in_features, 2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(x)
+
+
+# ---------------------------------------------------------------------------
+# Module-level classes for make_mentee tests (must not be defined in <locals>)
+# ---------------------------------------------------------------------------
+
+from mentor import make_mentee
+from mentor.trainers import Classifier as _Classifier
+
+@make_mentee(trainer=_Classifier)
+class TinyMakeMenteeClassifier(nn.Module):
+    """Minimal make_mentee-decorated model used by test_mentee tests."""
+    def __init__(self, n: int = 4):
+        super().__init__(n=n)
+        self.fc = nn.Linear(n, 2)
+    def forward(self, x):
+        return self.fc(x)
+
+
+@make_mentee()
+class TinyMakeMentee(nn.Module):
+    """Minimal make_mentee-decorated model (no trainer) used by test_mentee tests."""
+    def __init__(self, n: int = 4, bias: bool = True):
+        super().__init__(n=n, bias=bias)
+        self.fc = nn.Linear(n, 2, bias=bias)
+    def forward(self, x):
+        return self.fc(x)

@@ -526,10 +526,10 @@ class Mentee(nn.Module):
         self._optimizer: Optional[Any] = None       # cached when no trainer is set
         self._lr_scheduler: Optional[Any] = None    # cached when no trainer is set
         self.trainer: Optional[Any] = None          # optional MentorTrainer strategy object
-        self._grad_scaler: Optional[Any] = None     # torch.cuda.amp.GradScaler, created on first AMP train_epoch
+        self._grad_scaler: Optional[Any] = None     # torch.amp.GradScaler, created on first AMP train_epoch
         self._frozen_modules: set = set()           # module name prefixes frozen via freeze()
         self._lr_coefficients: Dict[str, float] = {}  # layer_name -> LR coefficient (absent = 1.0)
-        self._lr_coefficients: Dict[str, float] = {}  # layer_name -> LR coefficient (absent = 1.0)
+        self._total_train_iterations: int = 0          # cumulative batches seen across all train_epoch calls
 
     @property
     def current_epoch(self) -> int:
@@ -541,6 +541,15 @@ class Mentee(nn.Module):
             Equal to ``len(self._train_history)``.  Zero on a fresh model.
         """
         return len(self._train_history)
+
+    @property
+    def total_train_iterations(self) -> int:
+        """Cumulative number of batches processed across all :meth:`train_epoch` calls.
+
+        Incremented at the end of every epoch before the LR scheduler step.
+        Persisted in every checkpoint and restored on resume.
+        """
+        return self._total_train_iterations
 
     @property
     def layer_names(self) -> List[str]:
@@ -990,31 +999,20 @@ class Mentee(nn.Module):
             "lr": lr, "step_size": step_size, "gamma": gamma,
             "loss_fn": None, "overwrite_default_loss": False,
         }
-        param_groups = self._build_param_groups(lr)
         if self.trainer is not None:
-            # Let trainer configure the loss function, then override the optimizer
-            # with per-layer param groups so lr_coefficients are respected.
-            self.trainer.create_train_objects(
+            result = self.trainer.create_train_objects(
                 self, lr=lr, step_size=step_size, gamma=gamma,
                 loss_fn=loss_fn, overwrite_default_loss=overwrite_default_loss,
             )
-            if param_groups:
-                new_opt = Adam(param_groups, lr=lr)
-                new_sched = StepLR(new_opt, step_size=step_size, gamma=gamma)
-                self.trainer._optimizer = new_opt
-                self.trainer._lr_scheduler = new_sched
-            return {
-                "optimizer": self.trainer.optimizer,
-                "lr_scheduler": self.trainer.lr_scheduler,
-                "loss_fn": self.trainer.loss_fn,
-            }
+            if self._lr_coefficients:
+                self._apply_lr_coefficients(self.trainer.optimizer)
+            return result
         # --- trainer-less path ---
         if loss_fn is not None and (overwrite_default_loss or self._default_loss_fn is None):
             self._default_loss_fn = loss_fn
-        if param_groups:
-            self._optimizer = Adam(param_groups, lr=lr)
-        else:
-            self._optimizer = Adam(self.parameters(), lr=lr)
+        self._optimizer = Adam(self.parameters(), lr=lr)
+        if self._lr_coefficients:
+            self._apply_lr_coefficients(self._optimizer)
         self._lr_scheduler = StepLR(self._optimizer, step_size=step_size, gamma=gamma)
         return {"optimizer": self._optimizer, "lr_scheduler": self._lr_scheduler, "loss_fn": self._default_loss_fn}
 
@@ -1085,7 +1083,7 @@ class Mentee(nn.Module):
             already a DataLoader.
         amp : bool, optional
             Enable automatic mixed precision via
-            ``torch.autocast`` and ``torch.cuda.amp.GradScaler``.
+            ``torch.autocast`` and ``torch.amp.GradScaler``.
             The scaler is cached on the model as ``_grad_scaler`` so its
             loss-scale adapts correctly across epochs.  Default is ``False``.
 
@@ -1118,7 +1116,7 @@ class Mentee(nn.Module):
 
         if amp:
             if self._grad_scaler is None:
-                self._grad_scaler = torch.cuda.amp.GradScaler()
+                self._grad_scaler = torch.amp.GradScaler('cuda')
         scaler = self._grad_scaler
 
         pbar = tqdm(loader, desc=f"train epoch {self.current_epoch + 1}", disable=not verbose)
@@ -1157,6 +1155,8 @@ class Mentee(nn.Module):
             else:
                 optimizer.step()
             optimizer.zero_grad()
+
+        self._total_train_iterations += len(loader)
 
         if lr_scheduler is not None:
             lr_scheduler.step()
@@ -1299,6 +1299,20 @@ class Mentee(nn.Module):
         # update best weights if principal metric improved
         if val_metrics:
             principal_key = next(iter(val_metrics))
+            _lower_is_better = {
+                "loss", "error", "mse", "mae", "rmse", "nll", "ce", "bce",
+            }
+            if (principal_key in _lower_is_better
+                    or any(principal_key.endswith(s)
+                           for s in ("_loss", "_error", "_mse", "_mae", "_rmse"))):
+                import warnings
+                warnings.warn(
+                    f"validate_epoch: principal metric {principal_key!r} looks like a "
+                    "lower-is-better metric, but best-epoch selection always maximises "
+                    "it. Put a higher-is-better metric (e.g. 'acc') first in the "
+                    "metrics dict returned by training_step / default_training_step.",
+                    UserWarning, stacklevel=2,
+                )
             best_val = (
                 self._validate_history[self._best_epoch_so_far].get(principal_key, float("-inf"))
                 if self._best_epoch_so_far >= 0
@@ -1333,6 +1347,8 @@ class Mentee(nn.Module):
         device: Optional[str] = None,
         patience: Optional[int] = None,
         amp: bool = False,
+        save_freq: int = 1,
+        validate_freq: int = 1,
     ) -> "Mentee":
         """Train and optionally validate for a fixed number of epochs.
 
@@ -1371,7 +1387,14 @@ class Mentee(nn.Module):
         pseudo_batch_size : int, optional
             Gradient accumulation steps.  Default is ``1``.
         checkpoint_path : str or Path, optional
-            If provided, :meth:`save` is called after every epoch.
+            If provided, :meth:`save` is called after every *save_freq* epochs.
+        save_freq : int, optional
+            Save frequency in epochs.  ``1`` (default) saves after every epoch.
+            ``<=0`` disables saving entirely.
+        validate_freq : int, optional
+            Validation frequency in epochs.  ``1`` (default) validates after
+            every epoch.  ``<=0`` disables validation entirely (including the
+            epoch-0 baseline).
         tensorboard_dir : str, optional
             Directory for a :class:`~torch.utils.tensorboard.SummaryWriter`.
             A writer is created at the start and closed when training ends.
@@ -1418,6 +1441,23 @@ class Mentee(nn.Module):
             writer = SummaryWriter(tensorboard_dir)
 
         try:
+            if self.current_epoch == 0 and val_data is not None and validate_freq > 0:
+                val_metrics = self.validate_epoch(
+                    val_data,
+                    batch_size=batch_size,
+                    collate_fn=collate_fn,
+                    num_workers=num_workers,
+                    memfail=memfail,
+                    tensorboard_writer=writer,
+                    verbose=verbose,
+                )
+                if checkpoint_path is not None and save_freq > 0:
+                    self.save(checkpoint_path)
+                if verbose:
+                    val_str = "  ".join(f"{k}={v:.4f}" for k, v in val_metrics.items()
+                                        if k != "memfails")
+                    print(f"epoch   0 | val {val_str} (baseline)")
+
             for _ in range(epochs):
                 train_metrics = self.train_epoch(
                     train_data,
@@ -1433,7 +1473,7 @@ class Mentee(nn.Module):
                     amp=amp,
                 )
                 val_metrics: Dict[str, float] = {}
-                if val_data is not None:
+                if val_data is not None and validate_freq > 0 and self.current_epoch % validate_freq == 0:
                     val_metrics = self.validate_epoch(
                         val_data,
                         batch_size=batch_size,
@@ -1444,7 +1484,7 @@ class Mentee(nn.Module):
                         verbose=verbose,
                     )
 
-                if checkpoint_path is not None:
+                if checkpoint_path is not None and save_freq > 0 and self.current_epoch % save_freq == 0:
                     self.save(checkpoint_path)
 
                 if verbose:
@@ -1542,7 +1582,7 @@ class Mentee(nn.Module):
             tmp_optimizer = Adam(self.parameters(), lr=start_lr)
 
         lr_mult = (end_lr / start_lr) ** (1.0 / num_iter)
-        tmp_scaler = torch.cuda.amp.GradScaler() if amp else None
+        tmp_scaler = torch.amp.GradScaler('cuda') if amp else None
 
         lrs: list = []
         losses: list = []
@@ -1636,9 +1676,21 @@ class Mentee(nn.Module):
                 "params": params,
                 "lr": lr * coeff,
                 "_mentor_layer": layer_name,
-                "_mentor_coeff": coeff,
             })
         return groups
+
+    def _apply_lr_coefficients(self, optimizer: Any) -> None:
+        """Rebuild optimizer param groups to reflect current ``_lr_coefficients``.
+
+        Uses ``optimizer.defaults["lr"]`` as the base learning rate so each
+        layer's effective LR is ``base_lr * _lr_coefficients.get(layer, 1.0)``.
+        Safe to call at any time -- optimizer momentum/variance state is keyed
+        by parameter id and is unaffected by group reorganisation.
+        """
+        base_lr = optimizer.defaults["lr"]
+        new_groups = self._build_param_groups(base_lr)
+        if new_groups:
+            optimizer.param_groups = new_groups
 
     def _resolve_optimizer(self, optimizer: Optional[Any] = None) -> Optional[Any]:
         """Return the effective optimizer: explicit arg > trainer > self._optimizer."""
@@ -1736,54 +1788,40 @@ class Mentee(nn.Module):
         coefficient: float,
         patterns: Union[str, List[str]],
         optimizer: Optional[Any] = None,
-        reset_optimizer_if_needed: bool = False,
     ) -> "Mentee":
         r"""Set a per-layer learning-rate coefficient for layers matching *patterns*.
 
         The effective LR for each layer is ``global_lr * coefficient``.
-        :attr:`_lr_coefficients` is the source of truth; it is persisted
-        in every checkpoint and applied automatically by
-        :meth:`create_train_objects`.
+        :attr:`_lr_coefficients` is the source of truth; it is persisted in
+        every checkpoint and applied automatically by :meth:`create_train_objects`.
 
-        **Live optimizer update (fast path)**
-        If a resolved optimizer has a per-layer group for the target
-        layer (identified by the ``'_mentor_layer'`` key written by
-        :meth:`create_train_objects`), the group's ``lr`` is updated
-        in-place::
+        If an optimizer is available (via *optimizer* or the cached trainer/model
+        optimizer), :meth:`_apply_lr_coefficients` is called immediately to
+        rebuild the param groups with the new coefficient applied.  Optimizer
+        momentum / variance state (keyed by parameter id) is preserved.
 
-            group['lr'] *= new_coefficient / old_coefficient
-
-        This preserves any decay the LR scheduler has already applied.
-        The edge case ``old_coefficient == 0.0`` cannot be resolved by
-        ratio — a rebuild is required in that situation.
-
-        **Rebuild path**
-        A rebuild (via :meth:`create_train_objects`) is triggered when:
-
-        * the layer has no per-layer group in the optimizer (e.g. the
-          optimizer was created before ``set_lr_coefficient`` was called
-          and the optimizer is a flat single-group instance), or
-        * ``old_coefficient == 0.0`` and ``coefficient != 0.0``.
-
-        When ``reset_optimizer_if_needed=False`` (default) and a rebuild
-        would be needed, :exc:`RuntimeError` is raised instead.
+        .. note::
+            :meth:`_apply_lr_coefficients` derives the base learning rate from
+            ``optimizer.defaults["lr"]`` -- the value passed at optimizer
+            creation, not the current scheduler-decayed value.  Calling this
+            method mid-training therefore resets affected layers to
+            ``initial_lr * coefficient``, discarding any decay.  Call
+            :meth:`set_lr_coefficient` **before training begins** or
+            **at a deliberate phase boundary** (e.g. when unfreezing layers
+            with a freshly built optimizer) to avoid this effect.
 
         Parameters
         ----------
         coefficient : float
-            Multiplier relative to the global LR.  ``1.0`` restores the
-            default.  ``0.0`` effectively freezes the layer's LR without
-            setting ``requires_grad=False``.
+            Multiplier relative to the global LR.  ``1.0`` restores the default
+            (the layer is removed from :attr:`_lr_coefficients` to keep it sparse).
+            ``0.0`` zeroes the layer's LR without setting ``requires_grad=False``.
         patterns : str or list[str]
             Exact names or ``re.fullmatch`` patterns matched against
             :attr:`layer_names`.
         optimizer : torch.optim.Optimizer, optional
-            Optimizer to update in-place or rebuild.  Defaults to the
-            trainer's or the model's cached optimizer.
-        reset_optimizer_if_needed : bool, optional
-            When ``True`` and an in-place update is not possible, rebuild
-            the optimizer via :meth:`create_train_objects` (Adam state is
-            reset).  When ``False`` (default), raise :exc:`RuntimeError`.
+            Optimizer to update.  Defaults to the trainer's or the model's
+            cached optimizer.
 
         Returns
         -------
@@ -1792,75 +1830,21 @@ class Mentee(nn.Module):
 
         Examples
         --------
-        >>> model.set_lr_coefficient(0.1, "backbone")          # 10x lower LR
-        >>> model.set_lr_coefficient(0.0, ["backbone"])         # zero out backbone LR
-        >>> model.set_lr_coefficient(1.0, r"backbone\..*")     # restore all sub-layers
+        >>> model.set_lr_coefficient(0.1, "backbone")        # 10x slower backbone
+        >>> model.set_lr_coefficient(0.0, ["backbone"])       # zero backbone LR
+        >>> model.set_lr_coefficient(1.0, r"backbone\..*")   # restore all sub-layers
         """
         if isinstance(patterns, str):
             patterns = [patterns]
         matched = self.select_layers(patterns)
-
-        # Collect (layer, old_coeff, new_coeff) triples before mutating state
-        updates = [
-            (layer, self._lr_coefficients.get(layer, 1.0), coefficient)
-            for layer in matched
-        ]
-
-        # Update source of truth
-        for layer, _, new_c in updates:
-            if new_c == 1.0:
-                self._lr_coefficients.pop(layer, None)  # keep dict sparse
+        for layer in matched:
+            if coefficient == 1.0:
+                self._lr_coefficients.pop(layer, None)
             else:
-                self._lr_coefficients[layer] = new_c
-
+                self._lr_coefficients[layer] = coefficient
         eff_opt = self._resolve_optimizer(optimizer)
-        if eff_opt is None:
-            return self  # no optimizer yet; coefficients applied on next create_train_objects
-
-        layer_to_group = {
-            g.get("_mentor_layer"): g
-            for g in eff_opt.param_groups
-            if "_mentor_layer" in g
-        }
-
-        needs_rebuild = False
-        for layer, _old_stored, new_c in updates:
-            # Affect the exact group AND all descendant groups (e.g. setting
-            # coefficient for 'backbone' also updates 'backbone.0', 'backbone.1', …)
-            affected = [
-                (g_name, g)
-                for g_name, g in layer_to_group.items()
-                if g_name == layer or g_name.startswith(layer + ".")
-            ]
-            if not affected:
-                # No per-layer group exists for this layer or any descendant
-                needs_rebuild = True
-                continue
-            for g_name, group in affected:
-                old_c = group.get("_mentor_coeff", 1.0)  # effective coeff when group was built
-                if old_c == 0.0 and new_c != 0.0:
-                    needs_rebuild = True
-                    continue
-                # Fast path: scale current lr by ratio of new to old effective coefficient
-                if old_c != 0.0:
-                    group["lr"] = group["lr"] * (new_c / old_c)
-                else:
-                    group["lr"] = self._create_train_objects_kwargs.get("lr", 1e-3) * new_c
-                group["_mentor_coeff"] = new_c
-
-        if needs_rebuild:
-            if reset_optimizer_if_needed:
-                self.create_train_objects(
-                    **getattr(self, "_create_train_objects_kwargs",
-                              {"lr": self._create_train_objects_kwargs.get("lr", 1e-3)})
-                )
-            else:
-                raise RuntimeError(
-                    "Some layers require optimizer restructuring (no per-layer "
-                    "group found, or old coefficient was 0.0). "
-                    "Pass reset_optimizer_if_needed=True to rebuild, or call "
-                    "create_train_objects() explicitly."
-                )
+        if eff_opt is not None:
+            self._apply_lr_coefficients(eff_opt)
         return self
 
     def select_layers(self, layer_names: List[str]) -> List[str]:
@@ -2011,18 +1995,18 @@ class Mentee(nn.Module):
             self._unfreeze_prefixes(*matched)
         eff_opt = self._resolve_optimizer(optimizer)
         if eff_opt is not None and matched:
-            layer_to_group = {
-                g.get("_mentor_layer"): g
-                for g in eff_opt.param_groups
-                if "_mentor_layer" in g
-            }
-            missing = [lay for lay in matched if lay not in layer_to_group]
+            params_in_opt = {id(p) for g in eff_opt.param_groups for p in g["params"]}
+            missing = [
+                lay for lay in matched
+                if any(
+                    id(p) not in params_in_opt
+                    for p in self.get_submodule(lay)._parameters.values()
+                    if p is not None and p.requires_grad
+                )
+            ]
             if missing:
                 if reset_optimizer_if_needed:
-                    self.create_train_objects(
-                        **getattr(self, "_create_train_objects_kwargs",
-                                  {"lr": self._create_train_objects_kwargs.get("lr", 1e-3)})
-                    )
+                    self.create_train_objects(**self._create_train_objects_kwargs)
                 else:
                     raise RuntimeError(
                         f"Layers {missing} have no optimizer param group (they were "
@@ -2081,6 +2065,7 @@ class Mentee(nn.Module):
             "default_loss_fn": self._default_loss_fn,
         "frozen_modules": list(self._frozen_modules),
         "lr_coefficients": dict(self._lr_coefficients),
+        "total_train_iterations": self._total_train_iterations,
         "layer_names": self.layer_names,
         }
         eff_optimizer    = optimizer    if optimizer    is not None else self.optimizer
@@ -2098,7 +2083,7 @@ class Mentee(nn.Module):
         cls,
         path: Union[str, Path],
         model_class: Optional[Type["Mentee"]] = None,
-        instantiate_on_fail: bool = True,
+        tolerate_irresumable_model: bool = True,
         **kwargs: Any,
     ) -> "Mentee":
         """Load a checkpoint saved by :meth:`save` and return the model.
@@ -2107,11 +2092,6 @@ class Mentee(nn.Module):
         ``class_module`` / ``class_name`` fields stored in the checkpoint
         using :func:`importlib.import_module`.
 
-        If *path* does not exist and *instantiate_on_fail* is ``True``,
-        *model_class* is instantiated fresh with ``**kwargs`` and returned.
-        This lets training scripts treat a missing checkpoint as "start from
-        scratch" without extra boilerplate.
-
         Parameters
         ----------
         path : str or pathlib.Path
@@ -2119,14 +2099,14 @@ class Mentee(nn.Module):
         model_class : type, optional
             Explicit subclass to instantiate.  Required when the checkpoint's
             module is not importable in the current environment, and required
-            when *instantiate_on_fail* is ``True``.
-        instantiate_on_fail : bool, optional
-            When ``True`` (default) and *path* does not exist, return a freshly
-            constructed *model_class* instance built with ``**kwargs`` instead
-            of raising :exc:`FileNotFoundError`.
-        **kwargs : Any
-            Constructor arguments forwarded to *model_class* when
-            *instantiate_on_fail* is triggered.
+            when *tolerate_irresumable_model* is ``True``.
+        tolerate_irresumable_model : bool, optional
+            When ``True`` (default), any failure to load the model — including
+            a missing file, an unimportable class, a state-dict mismatch, or
+            any other exception — falls back to a freshly instantiated
+            *model_class* using the constructor params stored in the checkpoint
+            (or an empty dict when the file is missing or unreadable).
+            When ``False``, any such failure raises immediately.
 
         Returns
         -------
@@ -2135,13 +2115,11 @@ class Mentee(nn.Module):
 
         Raises
         ------
-        FileNotFoundError
-            If *path* does not exist and *instantiate_on_fail* is ``False``.
-        ImportError
-            If *model_class* is ``None`` and the checkpoint's module cannot
-            be imported.
-        AttributeError
-            If the class name is not found in the resolved module.
+        Exception
+            Any failure when *tolerate_irresumable_model* is ``False``.
+        ValueError
+            If *tolerate_irresumable_model* is ``True`` but *model_class* is
+            ``None`` when the fallback is triggered.
 
         Examples
         --------
@@ -2150,43 +2128,52 @@ class Mentee(nn.Module):
 
         Start from scratch when no checkpoint exists yet::
 
-        >>> model = Mentee.resume(
-        ...     "run/checkpoint.pt",
-        ...     model_class=MyNet,
-        ...     num_classes=10,
-        ... )
+        >>> model = MyNet.resume("run/checkpoint.pt", model_class=MyNet)
         """
-        if isinstance(path, (str, os.PathLike)) and not Path(path).exists():
-            if instantiate_on_fail:
-                if model_class is None:
-                    raise ValueError(
-                        "model_class must be provided when instantiate_on_fail=True "
-                        "and the checkpoint file does not exist."
-                    )
-                return model_class(**kwargs)
-            raise FileNotFoundError(f"Checkpoint not found: {path}")
+        try:
+            if isinstance(path, (str, os.PathLike)) and not Path(path).exists():
+                raise FileNotFoundError(f"Checkpoint not found: {path}")
 
-        checkpoint = torch.load(path, weights_only=False)
+            checkpoint = torch.load(path, weights_only=False)
 
-        if model_class is None:
-            import importlib
-            mod = importlib.import_module(checkpoint["class_module"])
-            model_class = getattr(mod, checkpoint["class_name"])
+            if model_class is None:
+                import importlib
+                mod = importlib.import_module(checkpoint["class_module"])
+                model_class = getattr(mod, checkpoint["class_name"])
 
-        instance: Mentee = model_class(**checkpoint["constructor_params"])
-        instance.load_state_dict(checkpoint["state_dict"])
-        instance._train_history = checkpoint["train_history"]
-        instance._validate_history = checkpoint["validate_history"]
-        instance._software_history = checkpoint["software_history"]
-        instance._argv_history = checkpoint["argv_history"]
-        instance._best_weights_so_far = checkpoint["best_weights_so_far"]
-        instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
-        frozen = checkpoint.get("frozen_modules", [])
-        if frozen:
-            instance._freeze_prefixes(*frozen)
-        instance._lr_coefficients = checkpoint.get("lr_coefficients", {})
-        instance._inference_state = checkpoint.get("inference_state", {})
-        instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
+            instance: Mentee = model_class(**checkpoint["constructor_params"])
+            instance.load_state_dict(checkpoint["state_dict"])
+            instance._train_history = checkpoint["train_history"]
+            instance._validate_history = checkpoint["validate_history"]
+            instance._software_history = checkpoint["software_history"]
+            instance._argv_history = checkpoint["argv_history"]
+            instance._best_weights_so_far = checkpoint["best_weights_so_far"]
+            instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
+            frozen = checkpoint.get("frozen_modules", [])
+            if frozen:
+                instance._freeze_prefixes(*frozen)
+            instance._lr_coefficients = checkpoint.get("lr_coefficients", {})
+            instance._total_train_iterations = checkpoint.get("total_train_iterations", 0)
+            instance._inference_state = checkpoint.get("inference_state", {})
+            instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
+        except Exception as _model_exc:
+            if not tolerate_irresumable_model:
+                raise
+            if model_class is None:
+                raise ValueError(
+                    f"Could not load model from checkpoint ({_model_exc!r}) and "
+                    f"model_class is None — provide model_class when "
+                    f"tolerate_irresumable_model=True."
+                ) from _model_exc
+            constructor_params = {}
+            try:
+                constructor_params = torch.load(path, weights_only=False).get(
+                    "constructor_params", {}
+                )
+            except Exception:
+                pass
+            instance = model_class(**constructor_params)
+
         return instance
 
     # ------------------------------------------------------------------
@@ -2199,7 +2186,8 @@ class Mentee(nn.Module):
         path: Union[str, Path],
         model_class: Optional[Type["Mentee"]] = None,
         device: Optional[Union[str, torch.device]] = None,
-        instantiate_on_fail: bool = True,
+        tolerate_irresumable_model: bool = True,
+        tolerate_irresumable_trainstate: bool = False,
         **kwargs: Any,
     ) -> Tuple["Mentee", ...]:
         """Load a checkpoint and reconstruct everything needed to continue training.
@@ -2207,11 +2195,6 @@ class Mentee(nn.Module):
         Restores model weights and history, moves the model to *device*,
         calls :meth:`create_train_objects`, and restores optimiser and
         scheduler state if present in the checkpoint.
-
-        If *path* does not exist and *instantiate_on_fail* is ``True``,
-        *model_class* is instantiated fresh with the constructor arguments
-        extracted from ``**kwargs``, then :meth:`create_train_objects` is
-        called with the remaining keyword arguments.
 
         Parameters
         ----------
@@ -2222,16 +2205,19 @@ class Mentee(nn.Module):
         device : str or torch.device, optional
             Target device, e.g. ``"cuda"`` or ``"cpu"``.  If ``None`` the
             model stays on CPU as loaded.
-        instantiate_on_fail : bool, optional
-            When ``True`` (default) and *path* does not exist, instantiate
-            *model_class* fresh with ``**kwargs`` and call
-            :meth:`create_train_objects` with those same kwargs instead of
-            raising :exc:`FileNotFoundError`.
+        tolerate_irresumable_model : bool, optional
+            When ``True`` (default), any failure to load the model — including
+            a missing file, an unimportable class, a state-dict mismatch, or
+            any other exception — falls back to a freshly instantiated
+            *model_class*.  *model_class* must be provided when this fallback
+            is triggered.  When ``False``, any such failure raises immediately.
+        tolerate_irresumable_trainstate : bool, optional
+            When ``False`` (default) and the checkpoint contains no optimizer
+            state, or the optimizer / scheduler / scaler state cannot be
+            restored, an exception is raised.  Set to ``True`` to silently
+            continue with a freshly constructed optimizer instead.
         **kwargs : Any
             Passed to :meth:`create_train_objects` (e.g. ``lr=1e-4``).
-            When *instantiate_on_fail* triggers, also forwarded to the
-            *model_class* constructor (unknown keys are silently ignored by
-            :meth:`create_train_objects`, constructor errors surface normally).
 
         Returns
         -------
@@ -2243,6 +2229,13 @@ class Mentee(nn.Module):
         ------
         FileNotFoundError
             If *path* does not exist and *instantiate_on_fail* is ``False``.
+        RuntimeError
+            If the model cannot be loaded and *tolerate_irresumable_model*
+            is ``False``, or if the training state cannot be restored and
+            *tolerate_irresumable_trainstate* is ``False``.
+        ValueError
+            If *tolerate_irresumable_model* is ``True`` but *model_class* is
+            ``None`` when the fallback is triggered.
 
         Examples
         --------
@@ -2261,43 +2254,46 @@ class Mentee(nn.Module):
         ...     lr=1e-4,
         ... )
         """
-        if isinstance(path, (str, os.PathLike)) and not Path(path).exists():
-            if instantiate_on_fail:
-                if model_class is None:
-                    raise ValueError(
-                        "model_class must be provided when instantiate_on_fail=True "
-                        "and the checkpoint file does not exist."
-                    )
-                instance: Mentee = model_class(**kwargs)
-                if device is not None:
-                    instance.to(device)
-                train_objects = instance.create_train_objects(**kwargs)
-                optimizer = train_objects["optimizer"]
-                lr_scheduler = train_objects["lr_scheduler"]
-                return instance, optimizer, lr_scheduler
-            raise FileNotFoundError(f"Checkpoint not found: {path}")
+        # ------------------------------------------------------------------
+        # Model loading
+        # ------------------------------------------------------------------
+        checkpoint = {}
+        try:
+            if isinstance(path, (str, os.PathLike)) and not Path(path).exists():
+                raise FileNotFoundError(f"Checkpoint not found: {path}")
 
-        checkpoint = torch.load(path, weights_only=False)
+            checkpoint = torch.load(path, weights_only=False)
 
-        if model_class is None:
-            import importlib
-            mod = importlib.import_module(checkpoint["class_module"])
-            model_class = getattr(mod, checkpoint["class_name"])
+            if model_class is None:
+                import importlib
+                mod = importlib.import_module(checkpoint["class_module"])
+                model_class = getattr(mod, checkpoint["class_name"])
 
-        instance: Mentee = model_class(**checkpoint["constructor_params"])
-        instance.load_state_dict(checkpoint["state_dict"])
-        instance._train_history = checkpoint["train_history"]
-        instance._validate_history = checkpoint["validate_history"]
-        instance._software_history = checkpoint["software_history"]
-        instance._argv_history = checkpoint["argv_history"]
-        instance._best_weights_so_far = checkpoint["best_weights_so_far"]
-        instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
-        frozen = checkpoint.get("frozen_modules", [])
-        if frozen:
-            instance._freeze_prefixes(*frozen)
-        instance._lr_coefficients = checkpoint.get("lr_coefficients", {})
-        instance._inference_state = checkpoint.get("inference_state", {})
-        instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
+            instance: Mentee = model_class(**checkpoint["constructor_params"])
+            instance.load_state_dict(checkpoint["state_dict"])
+            instance._train_history = checkpoint["train_history"]
+            instance._validate_history = checkpoint["validate_history"]
+            instance._software_history = checkpoint["software_history"]
+            instance._argv_history = checkpoint["argv_history"]
+            instance._best_weights_so_far = checkpoint["best_weights_so_far"]
+            instance._best_epoch_so_far = checkpoint["best_epoch_so_far"]
+            frozen = checkpoint.get("frozen_modules", [])
+            if frozen:
+                instance._freeze_prefixes(*frozen)
+            instance._lr_coefficients = checkpoint.get("lr_coefficients", {})
+            instance._total_train_iterations = checkpoint.get("total_train_iterations", 0)
+            instance._inference_state = checkpoint.get("inference_state", {})
+            instance._default_loss_fn = checkpoint.get("default_loss_fn", None)
+        except Exception as _model_exc:
+            if not tolerate_irresumable_model:
+                raise
+            if model_class is None:
+                raise ValueError(
+                    f"Could not load model from checkpoint ({_model_exc!r}) and "
+                    f"model_class is None — provide model_class when "
+                    f"tolerate_irresumable_model=True."
+                ) from _model_exc
+            instance = model_class(**checkpoint.get("constructor_params", {}))
 
         if device is not None:
             instance.to(device)
@@ -2306,87 +2302,33 @@ class Mentee(nn.Module):
         optimizer = train_objects["optimizer"]
         lr_scheduler = train_objects["lr_scheduler"]
 
-        if "optimizer_state" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state"])
-            if device is not None:
-                for param_state in optimizer.state.values():
-                    for k, v in param_state.items():
-                        if isinstance(v, torch.Tensor):
-                            param_state[k] = v.to(device)
-        if lr_scheduler is not None and "lr_scheduler_state" in checkpoint:
-            lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state"])
-        if "grad_scaler_state" in checkpoint:
-            instance._grad_scaler = torch.cuda.amp.GradScaler()
-            instance._grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
+        # ------------------------------------------------------------------
+        # Training state loading
+        # ------------------------------------------------------------------
+        if "optimizer_state" not in checkpoint:
+            if not tolerate_irresumable_trainstate:
+                raise RuntimeError(
+                    "Checkpoint contains no optimizer state. "
+                    "Pass tolerate_irresumable_trainstate=True to continue "
+                    "with a freshly constructed optimizer."
+                )
+        else:
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state"])
+                if device is not None:
+                    for param_state in optimizer.state.values():
+                        for k, v in param_state.items():
+                            if isinstance(v, torch.Tensor):
+                                param_state[k] = v.to(device)
+                if lr_scheduler is not None and "lr_scheduler_state" in checkpoint:
+                    lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state"])
+                if "grad_scaler_state" in checkpoint:
+                    instance._grad_scaler = torch.amp.GradScaler('cuda')
+                    instance._grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
+            except Exception as _ts_exc:
+                if not tolerate_irresumable_trainstate:
+                    raise
+                # tolerated — continue with the fresh optimizer from create_train_objects
 
         return instance, optimizer, lr_scheduler
 
-
-# ---------------------------------------------------------------------------
-# make_mentee — class decorator
-# ---------------------------------------------------------------------------
-
-def make_mentee(trainer=None):
-    """Class decorator that turns a plain ``nn.Module`` subclass into a ``Mentee``.
-
-    The decorated class gains the full ``Mentee`` API (checkpointing, history,
-    provenance, ``fit``, ``find_lr``, …) without requiring explicit inheritance.
-
-    Parameters
-    ----------
-    trainer : MentorTrainer subclass (uninstantiated), optional
-        If supplied, an instance of this trainer is assigned to ``self.trainer``
-        after construction — only when ``self.trainer`` is not already set by
-        the class's own ``__init__``.
-
-    Examples
-    --------
-    ::
-
-        from mentor import make_mentee
-        from my_module import MyTrainer
-
-        @make_mentee(trainer=MyTrainer)
-        class MyNet(nn.Module):
-            def __init__(self, num_classes=10):
-                super().__init__(num_classes=num_classes)
-                self.fc = nn.Linear(128, num_classes)
-
-            def forward(self, x):
-                return self.fc(x.flatten(1))
-
-    The MRO of the returned class is ``MyNet → nn.Module`` replaced by
-    ``MyNet → Mentee → nn.Module``, so ``super().__init__(...)`` inside
-    ``MyNet.__init__`` correctly reaches ``Mentee.__init__``.
-    """
-    def decorator(cls):
-        original_init = cls.__init__
-        sig = inspect.signature(original_init)
-
-        def new_init(self, *args, **kwargs):
-            # Capture constructor kwargs before calling original init so that
-            # Mentee.__init__ (called via super() inside original_init) stores
-            # them; we then override _constructor_params with the full binding.
-            bound = sig.bind(self, *args, **kwargs)
-            bound.apply_defaults()
-            captured = {k: v for k, v in bound.arguments.items() if k != "self"}
-            original_init(self, *args, **kwargs)
-            # Override with the precisely captured params (Mentee's stack-walk
-            # heuristic may miss keyword-only or defaulted arguments).
-            self._constructor_params = captured
-            if trainer is not None and getattr(self, "trainer", None) is None:
-                self.trainer = trainer()
-
-        new_cls = type(
-            cls.__name__,
-            (cls, Mentee),
-            {
-                "__init__": new_init,
-                "__module__": cls.__module__,
-                "__qualname__": cls.__qualname__,
-                "__doc__": cls.__doc__,
-            },
-        )
-        return new_cls
-
-    return decorator

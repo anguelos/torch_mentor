@@ -104,6 +104,12 @@ def main():
     writer = SummaryWriter(p.tensorboard_dir) if p.tensorboard_dir else None
 
     print(f"Starting at epoch {model.current_epoch}, training for {p.epochs} epochs on {p.device}.")
+
+    if model.current_epoch == 0:
+        val_metrics = model.validate_epoch(val_loader, tensorboard_writer=writer, verbose=p.verbose)
+        print(f"Epoch   0 | val acc {val_metrics.get('accuracy', 0):.4f} loss {val_metrics.get('loss', 0):.4f} (baseline)")
+        model.save(p.resume_path, optimizer=optimizer, lr_scheduler=lr_scheduler)
+
     for _ in range(p.epochs):
         train_metrics = model.train_epoch(train_loader, optimizer, lr_scheduler=lr_scheduler,
             pseudo_batch_size=p.pseudo_batch, memfail="ignore",

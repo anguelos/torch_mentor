@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from helpers import LeNetMentee, MinimalMentee, make_loader
+from helpers import LeNetMentee, MinimalMentee, make_loader, TinyMakeMenteeClassifier, TinyMakeMentee
 from mentor.mentee import (
     Mentee,
     _fmt_metrics,
@@ -471,6 +471,140 @@ def test_resume_training_restores_model_and_objects(trained_model):
 
 
 # ---------------------------------------------------------------------------
+# resume — tolerate_irresumable_model
+# ---------------------------------------------------------------------------
+
+def test_resume_raises_on_bad_model_by_default(tmp_path):
+    m = LeNetMentee()
+    p = tmp_path / "good.pt"
+    m.save(p)
+    cp = torch.load(p, weights_only=False)
+    first_key = next(iter(cp["state_dict"]))
+    del cp["state_dict"][first_key]
+    torch.save(cp, p)
+
+    with pytest.raises(RuntimeError):
+        LeNetMentee.resume(p, model_class=LeNetMentee, tolerate_irresumable_model=False)
+
+
+def test_resume_tolerate_bad_model_falls_back(tmp_path):
+    m = LeNetMentee()
+    p = tmp_path / "good.pt"
+    m.save(p)
+    cp = torch.load(p, weights_only=False)
+    first_key = next(iter(cp["state_dict"]))
+    del cp["state_dict"][first_key]
+    torch.save(cp, p)
+
+    loaded = LeNetMentee.resume(p, model_class=LeNetMentee, tolerate_irresumable_model=True)
+    assert isinstance(loaded, LeNetMentee)
+
+
+def test_resume_tolerate_bad_model_requires_model_class(tmp_path):
+    m = LeNetMentee()
+    p = tmp_path / "good.pt"
+    m.save(p)
+    cp = torch.load(p, weights_only=False)
+    cp["class_module"] = "nonexistent.module.that.does.not.exist"
+    torch.save(cp, p)
+
+    with pytest.raises(ValueError, match="model_class"):
+        LeNetMentee.resume(p, model_class=None, tolerate_irresumable_model=True)
+
+
+# ---------------------------------------------------------------------------
+# resume_training — tolerate_irresumable_trainstate
+# ---------------------------------------------------------------------------
+
+def test_resume_training_raises_on_missing_optimizer_state_by_default(lenet, tmp_path):
+    # save WITHOUT optimizer — no optimizer_state key in checkpoint
+    p = tmp_path / "no_opt.pt"
+    lenet.save(p)
+    with pytest.raises(RuntimeError, match="no optimizer state"):
+        LeNetMentee.resume_training(p, model_class=LeNetMentee, lr=1e-3)
+
+
+def test_resume_training_tolerate_missing_optimizer_state(lenet, tmp_path):
+    p = tmp_path / "no_opt.pt"
+    lenet.save(p)
+    model, opt, sched = LeNetMentee.resume_training(
+        p, model_class=LeNetMentee, lr=1e-3,
+        tolerate_irresumable_trainstate=True,
+    )
+    assert isinstance(opt, torch.optim.Optimizer)
+    assert model.current_epoch == lenet.current_epoch
+
+
+def test_resume_training_ok_with_optimizer_state(trained_model, tmp_path):
+    model, opt, sched = trained_model
+    p = tmp_path / "with_opt.pt"
+    model.save(p, optimizer=opt, lr_scheduler=sched)
+    loaded, opt2, sched2 = LeNetMentee.resume_training(
+        p, model_class=LeNetMentee, lr=1e-3,
+        tolerate_irresumable_trainstate=False,
+    )
+    assert loaded.current_epoch == model.current_epoch
+
+
+# ---------------------------------------------------------------------------
+# resume_training — tolerate_irresumable_model
+# ---------------------------------------------------------------------------
+
+def test_resume_training_raises_on_bad_model_by_default(tmp_path):
+    # Save a checkpoint then corrupt the state_dict so load_state_dict fails
+    m = LeNetMentee()
+    p = tmp_path / "good.pt"
+    m.save(p)
+    cp = torch.load(p, weights_only=False)
+    # Remove a required key to trigger RuntimeError in load_state_dict
+    first_key = next(iter(cp["state_dict"]))
+    del cp["state_dict"][first_key]
+    torch.save(cp, p)
+
+    with pytest.raises(RuntimeError):
+        LeNetMentee.resume_training(
+            p, model_class=LeNetMentee, lr=1e-3,
+            tolerate_irresumable_model=False,
+            tolerate_irresumable_trainstate=True,
+        )
+
+
+def test_resume_training_tolerate_bad_model_falls_back(tmp_path):
+    m = LeNetMentee()
+    p = tmp_path / "good.pt"
+    m.save(p)
+    cp = torch.load(p, weights_only=False)
+    first_key = next(iter(cp["state_dict"]))
+    del cp["state_dict"][first_key]
+    torch.save(cp, p)
+
+    loaded, opt, sched = LeNetMentee.resume_training(
+        p, model_class=LeNetMentee, lr=1e-3,
+        tolerate_irresumable_model=True,
+        tolerate_irresumable_trainstate=True,
+    )
+    assert isinstance(loaded, LeNetMentee)
+    assert isinstance(opt, torch.optim.Optimizer)
+
+
+def test_resume_training_tolerate_bad_model_requires_model_class(tmp_path):
+    m = LeNetMentee()
+    p = tmp_path / "good.pt"
+    m.save(p)
+    cp = torch.load(p, weights_only=False)
+    # Break the class module so importlib fails and model_class is None
+    cp["class_module"] = "nonexistent.module.that.does.not.exist"
+    torch.save(cp, p)
+
+    with pytest.raises(ValueError, match="model_class"):
+        LeNetMentee.resume_training(
+            p, model_class=None, lr=1e-3,
+            tolerate_irresumable_model=True,
+            tolerate_irresumable_trainstate=True,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -893,7 +1027,10 @@ def test_fit_runs_epochs(lenet, train_loader):
 def test_fit_with_val_data(lenet, train_loader, val_loader):
     lenet.create_train_objects(lr=1e-3)
     lenet.fit(train_loader, val_data=val_loader, epochs=1)
-    assert len(lenet._validate_history) == 1
+    # epoch 0 baseline + epoch 1 = 2 entries
+    assert len(lenet._validate_history) == 2
+    assert 0 in lenet._validate_history  # baseline at epoch 0
+    assert 1 in lenet._validate_history  # after first training epoch
 
 
 def test_fit_creates_train_objects_if_missing(lenet, train_loader):
@@ -995,68 +1132,26 @@ def test_find_lr_stops_on_divergence(lenet, train_loader):
 # ---------------------------------------------------------------------------
 
 def test_make_mentee_creates_mentee_subclass():
-    from mentor import make_mentee
-    from mentor.trainers import Classifier
-
-    @make_mentee(trainer=Classifier)
-    class _Tiny(nn.Module):
-        def __init__(self, n: int = 4):
-            super().__init__(n=n)
-            self.fc = nn.Linear(n, 2)
-        def forward(self, x):
-            return self.fc(x)
-
-    m = _Tiny(n=4)
+    m = TinyMakeMenteeClassifier(n=4)
     assert isinstance(m, Mentee)
 
 
 def test_make_mentee_sets_trainer():
-    from mentor import make_mentee
     from mentor.trainers import Classifier
-
-    @make_mentee(trainer=Classifier)
-    class _Tiny(nn.Module):
-        def __init__(self, n: int = 4):
-            super().__init__(n=n)
-            self.fc = nn.Linear(n, 2)
-        def forward(self, x):
-            return self.fc(x)
-
-    m = _Tiny(n=4)
+    m = TinyMakeMenteeClassifier(n=4)
     assert isinstance(m.trainer, Classifier)
 
 
 def test_make_mentee_captures_constructor_params():
-    from mentor import make_mentee
-
-    @make_mentee()
-    class _Tiny(nn.Module):
-        def __init__(self, n: int = 4, bias: bool = True):
-            super().__init__(n=n, bias=bias)
-            self.fc = nn.Linear(n, 2, bias=bias)
-        def forward(self, x):
-            return self.fc(x)
-
-    m = _Tiny(n=8, bias=False)
+    m = TinyMakeMentee(n=8, bias=False)
     assert m._constructor_params == {"n": 8, "bias": False}
 
 
 def test_make_mentee_roundtrip(tmp_path):
-    from mentor import make_mentee
-    from mentor.trainers import Classifier
-
-    @make_mentee(trainer=Classifier)
-    class _Tiny(nn.Module):
-        def __init__(self, n: int = 4):
-            super().__init__(n=n)
-            self.fc = nn.Linear(n, 2)
-        def forward(self, x):
-            return self.fc(x)
-
-    m = _Tiny(n=6)
+    m = TinyMakeMenteeClassifier(n=6)
     path = tmp_path / "tiny.pt"
     m.save(path)
-    loaded = _Tiny.resume(path, model_class=_Tiny)
+    loaded = TinyMakeMenteeClassifier.resume(path, model_class=TinyMakeMenteeClassifier)
     assert loaded._constructor_params == {"n": 6}
 
 

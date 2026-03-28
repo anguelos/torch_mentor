@@ -146,10 +146,10 @@ model.fit(train_data, val_data, epochs=10, checkpoint_path="phase2.pt")
 ## Per-layer learning rate coefficients
 
 `set_lr_coefficient` assigns a multiplier relative to the global learning
-rate.  The effective LR for a layer is `global_lr × coefficient`.
+rate.  The effective LR for a layer is `global_lr x coefficient`.
 
 ```python
-model.set_lr_coefficient(0.1, "backbone")          # 10× lower than global LR
+model.set_lr_coefficient(0.1, "backbone")          # 10x lower than global LR
 model.set_lr_coefficient(0.0, "backbone.layer1")   # zero out one sub-layer
 model.set_lr_coefficient(1.0, "backbone")          # restore default (removes entry)
 model.set_lr_coefficient(0.1, [r"backbone\..*"])   # regex — all backbone sub-layers
@@ -180,7 +180,7 @@ Coefficients can be set at any point — before or after `create_train_objects`:
 ```python
 model = MyResNet()
 model.set_lr_coefficient(0.01, "backbone")   # stored only; no optimizer yet
-model.create_train_objects(lr=1e-3)          # optimizer built with 0.01 × 1e-3 for backbone
+model.create_train_objects(lr=1e-3)          # optimizer built with 0.01 x 1e-3 for backbone
 ```
 
 ### Live in-place update
@@ -254,7 +254,7 @@ model.set_lr_coefficient(0.01, "backbone")
 model.freeze("backbone")
 # ... train head only ...
 model.unfreeze("backbone", reset_optimizer_if_needed=True)
-# backbone is now trainable at 0.01 × global_lr, as stored in _lr_coefficients
+# backbone is now trainable at 0.01 x global_lr, as stored in _lr_coefficients
 ```
 
 ---
@@ -290,5 +290,5 @@ Return the layer paths from `layer_names` that match any pattern in
 ### `create_train_objects(lr, step_size, gamma, ...)`
 
 Always reads `_frozen_modules` and `_lr_coefficients` to build one param
-group per non-frozen layer with `lr = global_lr × coefficient`.  Calling
+group per non-frozen layer with `lr = global_lr x coefficient`.  Calling
 this is the safe "full rebuild" path after any structural change.

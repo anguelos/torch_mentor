@@ -34,7 +34,41 @@ pip install -e mentor/
 
 ## Quick start
 
-### Option A — Built-in trainer (least code)
+### Option A — Wrap a pretrained model (zero code changes)
+
+Use `wrap_as_mentee` to add checkpointing and training history to any existing
+`nn.Module` instance — including pretrained models from `torchvision` (already
+a torch_mentor dependency):
+
+```python
+import torchvision.models as tvm
+from mentor import wrap_as_mentee, Classifier
+
+net = tvm.resnet50(weights=tvm.ResNet50_Weights.DEFAULT)
+model = wrap_as_mentee(
+    net,
+    # Store weights=None: at resume time the architecture is reconstructed
+    # from scratch and the fine-tuned weights are loaded from the checkpoint.
+    # Storing the pretrained enum would be fragile across torchvision versions.
+    constructor_params={"weights": None},
+    trainer=Classifier,
+)
+model.fit(train_data, val_data=val_data, epochs=5, lr=1e-4,
+          checkpoint_path="resnet50_cifar.pt")
+
+# Resume later — weights, history, and optimizer state all restored
+model, opt, sched = type(model).resume_training(
+    "resnet50_cifar.pt", model_class=type(model), lr=1e-4
+)
+```
+
+`constructor_params` records how to reconstruct the model architecture at
+resume time — `weights=None` is correct here because the fine-tuned weights
+come from the checkpoint, not from ImageNet pretraining.  The class of *net*
+must be importable by its qualified name; `torchvision.models` and similar
+libraries satisfy this automatically.
+
+### Option B — Built-in trainer (least code)
 
 Assign a `Classifier` or `Regressor` trainer to `self.trainer` and only implement `forward`:
 
@@ -52,7 +86,7 @@ class MyNet(Mentee):
         return self.fc(x.flatten(1))
 ```
 
-### Option B — Custom training step
+### Option C — Custom training step
 
 Override `training_step` and optionally `validation_step` for full control:
 
@@ -81,6 +115,7 @@ class MyNet(Mentee):
         acc = float(logits.argmax(1).eq(y.to(self.device)).float().mean())
         return {"accuracy": acc}
 ```
+
 
 ### Train, validate, save
 

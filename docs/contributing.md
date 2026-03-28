@@ -109,8 +109,8 @@ mypy mentor/
 
 The version string lives in two places — keep them in sync before a release:
 
-- `setup.py` → `version=`
-- `mentor/__init__.py` → `__version__`
+- `setup.py` -> `version=`
+- `mentor/__init__.py` -> `__version__`
 
 ## Publishing to PyPI
 

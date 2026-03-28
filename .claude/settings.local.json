@@ -49,7 +49,14 @@
       "Read(//home/anguelos_ro/.claude/**)",
       "Bash(head -20 echo \"---\" grep \"ruff\\\\|black\" /home/anguelos_ro/workspace/src/torch_mentor/setup.py)",
       "Bash(python -c \"import mentor; print\\(mentor.__version__\\)\")",
-      "Bash(python -m pytest tests/unit_testing/ -q)"
+      "Bash(python -m pytest tests/unit_testing/ -q)",
+      "Bash(python -m pytest tests/unit_testing/test_wrap_as_mentee.py -v)",
+      "Bash(python -m pytest tests/unit_testing/test_mentee.py::test_make_mentee_creates_mentee_subclass -v)",
+      "Bash(python -m pytest tests/unit_testing/)",
+      "Bash(python -m pytest tests/unit_testing/test_readme.py -v)",
+      "Bash(python -m pytest tests/unit_testing/test_mentee.py::test_fit_with_val_data -v)",
+      "Bash(python -m pytest tests/unit_testing/ --cov=mentor --cov-report=term-missing --cov-branch -q)",
+      "Bash(python -m pytest tests/unit_testing/ -q --tb=short)"
     ],
     "defaultMode": "acceptEdits"
   }
