@@ -1,38 +1,28 @@
-# CIFAR-10 examples
+# CIFAR-10 — reproducing He et al. (2016)
 
-Three scripts of increasing complexity, all training on CIFAR-10.
+`train_cifar_resnet56.py` replicates the CIFAR-10 result reported in
+*Deep Residual Learning for Image Recognition* (He et al., 2016):
+**6.97 % test error (~93 % accuracy)** with ResNet-56.
 
-| Script | What it shows |
-|---|---|
-| `train_cifar.py` | `Mentee` subclass with a hand-written `training_step` |
-| `train_cifar_classifier.py` | Same model using the built-in `Classifier` trainer — minimal boilerplate |
-| `train_cifar_resnet56.py` | Reproduces the exact ResNet-56 experiment from He et al. (2016) |
+It demonstrates extending `mentor` with a **custom trainer** that deviates
+from the built-in Adam + StepLR defaults.
 
 ---
 
-## train_cifar_resnet56.py — reproducing He et al. (2016)
-
-This script replicates the CIFAR-10 result reported in
-*Deep Residual Learning for Image Recognition* (He et al., 2016):
-**6.97 % test error (≈ 93 % accuracy)** with ResNet-56.
-
-It is a real-world example of extending `mentor` with a **custom trainer**
-that deviates from the built-in Adam + StepLR defaults.
-
-### Architecture
+## Architecture
 
 ResNet-56 is a CIFAR-specific design — it is not the same as the ImageNet
 ResNet-50 or ResNet-101 variants:
 
-- 3×3 convolutions throughout, no max-pool stem
-- Three groups of 9 `BasicBlock` residual blocks (16 → 32 → 64 filters)
+- 3x3 convolutions throughout, no max-pool stem
+- Three groups of 9 `BasicBlock` residual blocks (16 -> 32 -> 64 filters)
 - Global average pooling before a 10-class linear head
 - **855 K parameters** — fits comfortably in under 1 GB of GPU memory
 
 The paper trained on two GPUs with a combined batch size of 128.  With
 modern hardware a single GPU is sufficient.
 
-### Training recipe
+## Training recipe
 
 The script matches the paper's optimisation settings exactly:
 
@@ -40,17 +30,17 @@ The script matches the paper's optimisation settings exactly:
 |---|---|
 | Optimiser | SGD, momentum 0.9, weight decay 1e-4 |
 | Initial LR | 0.1 |
-| LR schedule | ÷10 at 32 K, 48 K, and 64 K iterations |
+| LR schedule | /10 at 32 K, 48 K, and 64 K iterations |
 | Batch size | 128 |
-| Epochs | 200 (≈ 78 K iterations) |
-| Augmentation | random crop 32×32 with padding 4, random horizontal flip |
+| Epochs | 200 (~78 K iterations) |
+| Augmentation | random crop 32x32 with padding 4, random horizontal flip |
 
-### Performance and runtime
+## Performance and runtime
 
 Measured on an RTX 3090:
 
 - **Throughput:** ~43 iterations / sec
-- **Total runtime:** ~30 minutes (78 K iterations ÷ 43 it/s ≈ 1 814 s)
+- **Total runtime:** ~30 minutes (78 K iterations / 43 it/s ~= 1 814 s)
 - **Peak GPU memory:** < 1 GB
 - **Best validation accuracy:** ~93.02 % (test error ~6.98 %)
 
@@ -69,7 +59,7 @@ mtr_plot_file_hist -paths ./tmp/resnet56.pt -verbose \
     -values validate/loss -output /tmp/cifar_56_loss.png
 ```
 
-### Usage
+## Usage
 
 ```bash
 # fresh run
@@ -84,7 +74,7 @@ python train_cifar_resnet56.py -device cuda:1 -batch_size 256
 
 All parameters have defaults; run with `-h` for the full list.
 
-### What the custom trainer demonstrates
+## What the custom trainer demonstrates
 
 `CifarSGDResnetClassifier` is a `MentorTrainer` subclass that illustrates
 two common reasons to write a custom trainer instead of using `Classifier`:
