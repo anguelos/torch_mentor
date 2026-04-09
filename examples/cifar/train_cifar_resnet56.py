@@ -217,32 +217,63 @@ def make_loaders(data_dir: str, batch_size: int, num_workers: int):
     return train, val
 
 
-def main(epochs: int=200, batch_size: int=128, lr: float=0.1, resume_path: str="./tmp/resnet56.pt", 
-         data: str="./tmp/data", device: str="cuda", verbose: bool=False, num_workers: int=2):
-    train_loader, val_loader = make_loaders(data, batch_size, num_workers)
+# def main(epochs: int=200, batch_size: int=128, lr: float=0.1, resume_path: str="./tmp/resnet56.pt", 
+#          data: str="./tmp/data", device: str="cuda", verbose: bool=False, num_workers: int=2):
+#     train_loader, val_loader = make_loaders(data, batch_size, num_workers)
 
-    model, opt, sched = CifarResNet56.resume_training(
-        resume_path,
-        model_class=CifarResNet56,
-        device=device,
-        lr=lr,
-        tolerate_irresumable_trainstate=True,
-    )
+#     model, opt, sched = CifarResNet56.resume_training(
+#         resume_path,
+#         model_class=CifarResNet56,
+#         device=device,
+#         lr=lr,
+#         tolerate_irresumable_trainstate=True,
+#     )
 
+#     model.fit(
+#         train_loader,
+#         val_data=val_loader,
+#         epochs=epochs,
+#         lr=lr,
+#         checkpoint_path=resume_path,
+#         verbose=verbose,
+#     )
+
+#     best = model._validate_history.get(model._best_epoch_so_far, {})
+#     print(f"\nBest epoch {model._best_epoch_so_far}: "
+#           f"acc={best.get('acc', 0):.4f}  "
+#           f"error={100*(1-best.get('acc', 0)):.2f}%")
+
+
+# if __name__ == "__main__":
+#     p, _ = fargv.parse_and_launch(main)
+
+
+def main():
+    args, _ = fargv.parse({
+        "epochs": 200,
+        "batch_size": 128,
+        "lr": 0.1,
+        "resume_path": "./tmp/resnet56.pt",
+        "data": "./tmp/data",
+        "device": "cuda",
+        "num_workers": 2,
+        "wandb": False,
+        "gradio": False,
+    })
+    print(f"Training CIFAR-10 ResNet-56 with args: {args}", flush=True)
+    train_loader, val_loader = make_loaders(args.data, args.batch_size, args.num_workers)
+    model, opt, sched = CifarResNet56.resume_training(args.resume_path, device=args.device, lr=args.lr)
     model.fit(
         train_loader,
         val_data=val_loader,
-        epochs=epochs,
-        lr=lr,
-        checkpoint_path=resume_path,
-        verbose=verbose,
+        epochs=args.epochs,
+        lr=args.lr,
+        checkpoint_path=args.resume_path,
+        verbose=args.verbosity > 0,
+        report_wandb=args.wandb,
+        report_gradio=args.gradio,
     )
-
-    best = model._validate_history.get(model._best_epoch_so_far, {})
-    print(f"\nBest epoch {model._best_epoch_so_far}: "
-          f"acc={best.get('acc', 0):.4f}  "
-          f"error={100*(1-best.get('acc', 0)):.2f}%")
 
 
 if __name__ == "__main__":
-    p, _ = fargv.parse_and_launch(main)
+    main()

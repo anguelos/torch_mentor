@@ -1,5 +1,7 @@
 # mentor
 
+<p align="center"><img src="_static/logo.svg" alt="mentor logo" width="200"/></p>
+
 **mentor** is a PyTorch training framework that keeps a model's weights,
 training history, provenance, and inference state together in a single
 `.pt` checkpoint file.

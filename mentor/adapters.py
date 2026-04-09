@@ -291,6 +291,7 @@ def wrap_as_mentee(
     instance._grad_scaler           = None
     instance._frozen_modules        = set()
     instance._lr_coefficients       = {}
+    instance._total_train_iterations = 0
 
     if trainer is not None:
         instance.trainer = trainer()

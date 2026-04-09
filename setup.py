@@ -37,6 +37,7 @@ setup(
         "console_scripts": [
             "mtr_checkpoint=mentor.reporting:main_checkpoint",
             "mtr_plot_file_hist=mentor.reporting:main_plot_file_hist",
+            "mtr_resume=mentor.resume:main_resume_training",
         ],
     },
 )

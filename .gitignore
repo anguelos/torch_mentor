@@ -63,3 +63,6 @@ Thumbs.db
 # Sphinx docs — built output only; sources (docs/*.rst, docs/conf.py) are tracked
 docs/_build/
 docs/generated/
+
+# Weights & Biases
+**/wandb/

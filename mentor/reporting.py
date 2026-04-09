@@ -533,7 +533,6 @@ def _apply_lr_coefficient(path: str, patterns: List[str], coefficient: float) ->
 
 def main_checkpoint() -> None:
     import fargv
-    from dataclasses import dataclass
     params = {
         "paths": [],
         "no_colors": False,
@@ -733,24 +732,23 @@ def plot_history(
 
 
 def main_plot_file_hist() -> None:
-    from fargv import fargv
+    import fargv
     import matplotlib.pyplot as plt
-    
-    @dataclass
-    class TrainConfig:
-        paths = fargv.FargvPositional(default=[], description="Checkpoint files to plot, e.g. -paths a.pt b.pt c.pt"),
-        values = fargv.FargvPositional(default=[], description="Metrics to plot in split/metric form, e.g. -values train/loss validate/acc (empty = all)"),
-        overlay = fargv.FargvBool(default=False, description="Overlay all metrics on a single axis instead of separate subplots"),
-        output =  fargv.FargvStr(default="", description="Save figure to this path (empty = show interactively)"),
 
-    p, _ = fargv.parse(TrainConfig)
+    params = {
+        "paths":   fargv.FargvPositional(default=[], description="Checkpoint files to plot, e.g. -paths a.pt b.pt c.pt"),
+        "values":  fargv.FargvPositional(default=[], description="Metrics to plot in split/metric form, e.g. -values train/loss validate/acc (empty = all)"),
+        "overlay": False,
+        "output":  "",
+    }
+    p, _ = fargv.parse(params)
     paths = list(p.paths)
     if not paths:
         print("Error: -paths requires at least one file, e.g. -paths a.pt b.pt c.pt")
         raise SystemExit(1)
 
     values = list(p.values)
-    if p.verbose:
+    if p.verbosity > 0:
         print(f"Files:   {paths}")
         print(f"Metrics: {values or '(all)'}")
 
@@ -758,7 +756,7 @@ def main_plot_file_hist() -> None:
 
     if p.output:
         fig.savefig(p.output, dpi=150, bbox_inches="tight")
-        if p.verbose:
+        if p.verbosity > 0:
             print(f"Saved to {p.output}")
     else:
         plt.show()

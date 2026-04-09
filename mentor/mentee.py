@@ -1330,6 +1330,234 @@ class Mentee(nn.Module):
 
         return val_metrics
 
+    def _start_gradio_tunnel(mentee) -> None:
+        """Start a Gradio training-monitor app and expose it via a public tunnel.
+
+        Builds a :class:`gradio.Blocks` interface that displays the current
+        epoch metrics and a live history plot read from
+        :attr:`_gradio_live_data`, then calls ``demo.launch(share=True,
+        prevent_thread_lock=True)`` in a daemon thread so training is not
+        blocked.  The public URL (and an ASCII QR code when ``qrcode`` is
+        available) are stored in :attr:`_gradio_url` for later printing.
+
+        Called once by :meth:`fit` when ``report_gradio=True``.  Requires
+        ``gradio`` (``pip install gradio``).
+        """
+        import gradio as gr
+        import threading
+
+        live = mentee._gradio_live_data
+
+        def _make_plot():
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            history = live.get("train_history", [])
+            val_history = live.get("validate_history", {})
+            if not history:
+                return None
+            fig, ax = plt.subplots(figsize=(10, 4))
+            epochs = list(range(1, len(history) + 1))
+            for key in history[0]:
+                if key != "memfails":
+                    ax.plot(epochs, [h.get(key, float("nan")) for h in history],
+                            label=f"train/{key}")
+            if val_history:
+                val_epochs = sorted(val_history.keys())
+                first = val_history[val_epochs[0]]
+                for key in first:
+                    if key != "memfails":
+                        ax.plot(val_epochs,
+                                [val_history[e].get(key, float("nan")) for e in val_epochs],
+                                "--", label=f"val/{key}")
+            ax.set_xlabel("Epoch")
+            ax.legend(fontsize="small")
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            return fig
+
+        def _refresh():
+            epoch = live.get("epoch", 0)
+            best = live.get("best_epoch", -1)
+            train = live.get("train", {})
+            validate = live.get("validate", {})
+            lines = [f"Epoch {epoch}  |  best {best}"]
+            if train:
+                lines.append("train:    " + "  ".join(
+                    f"{k}={v:.4f}" for k, v in train.items() if k != "memfails"))
+            if validate:
+                lines.append("validate: " + "  ".join(
+                    f"{k}={v:.4f}" for k, v in validate.items() if k != "memfails"))
+            return "\n".join(lines), _make_plot()
+
+        with gr.Blocks(title=mentee._training_label) as demo:
+            gr.Markdown(f"## {type(mentee).__name__} — {mentee._training_label}")
+            metrics_box = gr.Textbox(label="Current metrics", lines=4)
+            history_plot = gr.Plot(label="Training history")
+            gr.Button("Refresh now").click(_refresh, outputs=[metrics_box, history_plot])
+            gr.Timer(30.0).tick(_refresh, outputs=[metrics_box, history_plot])
+
+        mentee._gradio_demo = demo
+
+        _done = threading.Event()
+        _result: Dict[str, Any] = {}
+
+        def _launch() -> None:
+            try:
+                _, local_url, share_url = demo.launch(
+                    share=True, prevent_thread_lock=True, quiet=True
+                )
+                _result["url"] = share_url or local_url
+            except Exception as exc:
+                _result["error"] = exc
+            finally:
+                _done.set()
+
+        threading.Thread(target=_launch, daemon=True).start()
+        _done.wait(timeout=30)
+        mentee._gradio_url = _result.get("url")
+
+    def _update_gradio(
+        mentee,
+        train: Dict[str, float],
+        validate: Optional[Dict[str, float]],
+        verbose: bool = False,
+    ) -> None:
+        """Push one epoch of metrics to the live Gradio dashboard.
+
+        Called by :meth:`fit` once per epoch when ``report_gradio=True``.
+
+        On the **first call** the public tunnel URL (and ASCII QR code when
+        ``qrcode`` is available) are printed unconditionally.  On every
+        subsequent call the URL is printed only when *verbose* is ``True``.
+
+        When :attr:`_gradio_demo` is ``None`` the method returns immediately.
+
+        Parameters
+        ----------
+        train : dict[str, float]
+            Train metrics for the current epoch.  Pass ``{}`` for the
+            epoch-0 baseline call.
+        validate : dict[str, float] or None
+            Validation metrics, or ``None`` when no validation ran this epoch.
+        verbose : bool, optional
+            Print the tunnel URL after every update.  Default is ``False``.
+        """
+        if mentee._gradio_demo is None:
+            return
+
+        mentee._gradio_live_data.update({
+            "epoch": mentee.current_epoch,
+            "best_epoch": mentee._best_epoch_so_far,
+            "train": dict(train),
+            "validate": dict(validate or {}),
+            "train_history": list(mentee._train_history),
+            "validate_history": dict(mentee._validate_history),
+        })
+
+        if not mentee._gradio_initialised:
+            mentee._gradio_initialised = True
+            url = mentee._gradio_url or "(URL unavailable)"
+            print(f"Gradio monitor: {url}", flush=True)
+            try:
+                import qrcode as _qrcode
+                import io as _io
+                _qr = _qrcode.QRCode()
+                _qr.add_data(url)
+                _qr.make()
+                _buf = _io.StringIO()
+                _qr.print_ascii(out=_buf)
+                print(_buf.getvalue())
+            except ImportError:
+                print("(install qrcode for QR code: pip install qrcode)")
+            return
+
+        if verbose:
+            print(f"  gradio: {mentee._gradio_url}")
+
+    def _update_wandb(
+        mentee,
+        train: Dict[str, float],
+        validate: Optional[Dict[str, float]],
+        verbose: bool = False,
+    ) -> None:
+        """Log one epoch of metrics to Weights & Biases.
+
+        Called by :meth:`fit` once per epoch when ``report_wandb=True``.
+
+        On the **first call** within a :meth:`fit` run the method:
+
+        * back-fills any epochs already present in :attr:`_train_history`
+          that wandb has not yet received (relevant when resuming a
+          checkpoint that was trained without wandb);
+        * prints the run URL unconditionally;
+        * prints an ASCII QR code when the ``qrcode`` package is available.
+
+        On every subsequent call the URL is printed only when *verbose* is
+        ``True``.
+
+        When :attr:`_wandb` is ``None`` (wandb is not enabled for this run)
+        the method returns immediately.
+
+        Parameters
+        ----------
+        train : dict[str, float]
+            Train metrics for the current epoch (from :meth:`train_epoch`).
+            Pass an empty dict ``{}`` for the epoch-0 baseline call.
+        validate : dict[str, float] or None
+            Validation metrics for the current epoch, or ``None`` when no
+            validation was run this epoch.
+        verbose : bool, optional
+            Print the run URL after every logging call.  Default is
+            ``False``.
+        """
+        if mentee._wandb is None:
+            return
+
+        wandb = mentee._wandb
+        epoch = mentee.current_epoch
+
+        if not mentee._wandb_initialised:
+            mentee._wandb_initialised = True
+            # Back-fill epochs already in history that wandb hasn't seen yet.
+            last_wandb_epoch = int(wandb.run.summary.get("epoch", 0))
+            for e in range(last_wandb_epoch + 1, epoch):
+                t = mentee._train_history[e - 1]
+                v = mentee._validate_history.get(e, {})
+                wandb.log(
+                    {
+                        "epoch": e,
+                        **{f"train/{k}": val for k, val in t.items()},
+                        **{f"val/{k}": val for k, val in v.items()},
+                    },
+                    step=e,
+                )
+            url = wandb.run.url
+            print(f"wandb run: {url}", flush=True)
+            try:
+                import qrcode as _qrcode
+                import io as _io
+                _qr = _qrcode.QRCode()
+                _qr.add_data(url)
+                _qr.make()
+                _buf = _io.StringIO()
+                _qr.print_ascii(out=_buf)
+                print(_buf.getvalue())
+            except ImportError:
+                print("(install qrcode for QR code: pip install qrcode)")
+
+        wandb.log(
+            {
+                "epoch": epoch,
+                **{f"train/{k}": v for k, v in train.items()},
+                **{f"val/{k}": v for k, v in (validate or {}).items()},
+            },
+            step=epoch,
+        )
+
+        if verbose:
+            print(f"  wandb: {wandb.run.url}")
+
     def fit(
         self,
         train_data: Any,
@@ -1349,6 +1577,9 @@ class Mentee(nn.Module):
         amp: bool = False,
         save_freq: int = 1,
         validate_freq: int = 1,
+        report_wandb: bool = False,
+        report_gradio: bool = False,
+        training_label: Optional[str] = None,
     ) -> "Mentee":
         """Train and optionally validate for a fixed number of epochs.
 
@@ -1416,6 +1647,33 @@ class Mentee(nn.Module):
         amp : bool, optional
             Enable automatic mixed precision.  Forwarded to
             :meth:`train_epoch`.  Default is ``False``.
+        report_wandb : bool, optional
+            Log metrics to `Weights & Biases <https://wandb.ai>`_.
+            Requires ``wandb`` to be installed (``pip install wandb``).
+            When ``True``:
+
+            * A run is initialised with ``wandb.init`` if one is not already
+              active; the project name defaults to the model class name.
+            * Train metrics are logged under ``train/<key>`` and validation
+              metrics under ``val/<key>`` once per epoch.
+            * The run URL is printed at startup, with an ASCII QR code when
+              the ``qrcode`` package is available (``pip install qrcode``).
+            * When *verbose* is ``True``, the URL is also reprinted at the
+              end of every epoch line.
+
+            Default is ``False``.  A :class:`RuntimeWarning` is emitted
+            when ``True`` but ``wandb`` is not installed.
+        report_gradio : bool, optional
+            Start a local Gradio dashboard and expose it via a public reverse
+            tunnel (``gradio``\'s ``share=True``).  Requires ``gradio``
+            (``pip install gradio``).  The tunnel URL and an ASCII QR code
+            are printed at startup; the dashboard auto-refreshes every 30 s.
+            Default is ``False``.
+        training_label : str, optional
+            Human-readable identifier for this training run.  Used as the
+            wandb run ``name`` and ``id`` so the same label always resumes
+            the same wandb run.  When ``None`` (default) an automatic label
+            is derived as ``f"{ClassName}_{os.getpid()}"``.
 
         Returns
         -------
@@ -1440,6 +1698,49 @@ class Mentee(nn.Module):
         if tensorboard_dir is not None:
             writer = SummaryWriter(tensorboard_dir)
 
+        self._training_label = (
+            training_label
+            if training_label is not None
+            else f"{type(self).__name__}_{os.getpid()}"
+        )
+        self._wandb = None
+        self._wandb_initialised = False
+        if report_wandb:
+            try:
+                import wandb as _wandb_mod
+                self._wandb = _wandb_mod
+                if _wandb_mod.run is None:
+                    _wandb_mod.init(
+                        project=type(self).__name__,
+                        name=self._training_label,
+                        id=self._training_label,
+                        resume="allow",
+                    )
+            except ImportError:
+                import warnings
+                warnings.warn(
+                    "report_wandb=True but wandb is not installed. "
+                    "Install it with: pip install wandb",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
+        self._gradio_demo = None
+        self._gradio_url = None
+        self._gradio_live_data: Dict[str, Any] = {}
+        self._gradio_initialised = False
+        if report_gradio:
+            try:
+                self._start_gradio_tunnel()
+            except ImportError:
+                import warnings
+                warnings.warn(
+                    "report_gradio=True but gradio is not installed. "
+                    "Install it with: pip install gradio",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
         try:
             if self.current_epoch == 0 and val_data is not None and validate_freq > 0:
                 val_metrics = self.validate_epoch(
@@ -1455,6 +1756,8 @@ class Mentee(nn.Module):
                     if verbose:
                         print(f"Saving initial weights to {checkpoint_path}...", flush=True, file=sys.stderr)
                     self.save(checkpoint_path)
+                self._update_wandb({}, val_metrics, verbose=verbose)
+                self._update_gradio({}, val_metrics, verbose=verbose)
                 if verbose:
                     val_str = "  ".join(f"{k}={v:.4f}" for k, v in val_metrics.items()
                                         if k != "memfails")
@@ -1488,6 +1791,9 @@ class Mentee(nn.Module):
 
                 if checkpoint_path is not None and save_freq > 0 and self.current_epoch % save_freq == 0:
                     self.save(checkpoint_path)
+
+                self._update_wandb(train_metrics, val_metrics or None, verbose=verbose)
+                self._update_gradio(train_metrics, val_metrics or None, verbose=verbose)
 
                 if verbose:
                     train_str = "  ".join(f"{k}={v:.4f}" for k, v in train_metrics.items()

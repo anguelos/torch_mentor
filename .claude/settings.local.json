@@ -56,7 +56,14 @@
       "Bash(python -m pytest tests/unit_testing/test_readme.py -v)",
       "Bash(python -m pytest tests/unit_testing/test_mentee.py::test_fit_with_val_data -v)",
       "Bash(python -m pytest tests/unit_testing/ --cov=mentor --cov-report=term-missing --cov-branch -q)",
-      "Bash(python -m pytest tests/unit_testing/ -q --tb=short)"
+      "Bash(python -m pytest tests/unit_testing/ -q --tb=short)",
+      "Bash(python -m pytest tests/unit_testing/test_mentee.py -q --tb=short -k \"fit\")",
+      "Bash(python -c \"from mentor.mentee import Mentee; print\\('import OK'\\)\")",
+      "Bash(python -m pytest tests/unit_testing/test_wrap_as_mentee.py -q)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python -m pytest tests/ -q --ignore=tests/cli)",
+      "Bash(python -m pytest tests/cli/test_resume.py -v)",
+      "Bash(identify /home/anguelos_ro/workspace/src/torch_mentor/docs/_static/logo.svg)"
     ],
     "defaultMode": "acceptEdits"
   }

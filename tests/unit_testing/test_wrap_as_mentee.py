@@ -221,3 +221,32 @@ def test_wrap_as_mentee_forward_still_works():
     x = torch.randn(2, 4)
     out = instance(x)
     assert out.shape == (2, 2)
+
+
+# ---------------------------------------------------------------------------
+# Attribute completeness — wrap_as_mentee must set every attribute that
+# Mentee.__init__ sets.  This prevented the _total_train_iterations omission
+# from going undetected.
+# ---------------------------------------------------------------------------
+
+def test_wrap_as_mentee_has_total_train_iterations():
+    instance = PlainNet()
+    wrap_as_mentee(instance)
+    assert hasattr(instance, "_total_train_iterations")
+    assert instance._total_train_iterations == 0
+
+
+def test_wrap_as_mentee_attributes_match_fresh_mentee():
+    # Collect every private (_) attribute on a fresh Mentee subclass instance.
+    class TinyMentee(Mentee):
+        def __init__(self): super().__init__()
+        def forward(self, x): return x
+
+    mentee_attrs = {k for k in vars(TinyMentee()).keys() if k.startswith("_")}
+
+    instance = PlainNet()
+    wrap_as_mentee(instance)
+    wrapped_attrs = set(vars(instance).keys())
+
+    missing = mentee_attrs - wrapped_attrs
+    assert not missing, f"wrap_as_mentee did not set: {missing}"

@@ -1,5 +1,7 @@
 # mentor : A pytorch training framework for lazy and impatient people
 
+<p align="center"><img src="https://raw.githubusercontent.com/anguelos/torch_mentor/main/docs/_static/logo.svg" alt="mentor logo" width="200"/></p>
+
 [![License](https://img.shields.io/github/license/anguelos/torch_mentor)](https://github.com/anguelos/torch_mentor/blob/main/LICENSE)
 [![Tests](https://github.com/anguelos/torch_mentor/actions/workflows/tests.yml/badge.svg)](https://github.com/anguelos/torch_mentor/actions/workflows/tests.yml)
 [![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/anguelos/torch_mentor/badges/badges/coverage.json)](https://github.com/anguelos/torch_mentor/actions/workflows/tests.yml)
