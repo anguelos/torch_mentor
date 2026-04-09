@@ -60,15 +60,21 @@ def main(
     device="cuda",
     num_workers=2,
     pretrained=True,
-    verbose=False,
+    wandb=False,
+    gradio=False,
+    training_label="",
 ):
+    args, _ = fargv.parse_here()
+
     train_loader, val_loader = make_loaders(data, batch_size, num_workers)
 
     model, _, _ = MobileNetV2CIFAR10.resume_training(
         resume_path, model_class=MobileNetV2CIFAR10,
         device=device, lr=lr_head,
-        tolerate_irresumable_trainstate=True, pretrained=pretrained,
+        tolerate_irresumable_trainstate=True
     )
+
+    label = training_label or None
 
     # Stage 1: freeze backbone, train head only
     if model.current_epoch < epochs_head:
@@ -77,7 +83,9 @@ def main(
             model.create_train_objects(lr=lr_head)
         model.fit(train_loader, val_data=val_loader,
                   epochs=epochs_head - model.current_epoch,
-                  checkpoint_path=resume_path, verbose=verbose)
+                  checkpoint_path=resume_path, verbose=args.verbosity>0,
+                  report_wandb=wandb, report_gradio=gradio,
+                  training_label=label)
 
     # Stage 2: unfreeze backbone with lower lr to avoid forgetting
     total = epochs_head + epochs_finetune
@@ -87,7 +95,9 @@ def main(
         model.set_lr_coefficient(backbone_lr_coeff, "hf\\.mobilenet_v2.*")
         model.fit(train_loader, val_data=val_loader,
                   epochs=total - model.current_epoch,
-                  checkpoint_path=resume_path, verbose=verbose)
+                  checkpoint_path=resume_path, verbose=args.verbosity>0,
+                  report_wandb=wandb, report_gradio=gradio,
+                  training_label=label)
 
     best = model._validate_history.get(model._best_epoch_so_far, {})
     print(f"best epoch {model._best_epoch_so_far}: "
@@ -95,4 +105,4 @@ def main(
 
 
 if __name__ == "__main__":
-    fargv.parse_and_launch(main)
+    main()

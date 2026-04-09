@@ -132,15 +132,15 @@ def _train_direct(p, checkpoint) -> None:
         batch_size=batch_size, shuffle=False, num_workers=p.num_workers,
     ) if p.val_data else None
 
-    model, _, _ = Mentee.resume_training(
-        p.path, device=device, lr=lr,
-        tolerate_irresumable_trainstate=True,
-    )
-
     if p.dry_run:
         print(f"  [direct] would call model.fit() for {p.epochs or 1} epochs "
               f"on {p.train_data}")
         raise SystemExit(0)
+
+    model, _, _ = Mentee.resume_training(
+        p.path, device=device, lr=lr,
+        tolerate_irresumable_trainstate=True,
+    )
 
     model.fit(
         train_loader,
@@ -238,7 +238,7 @@ def main_resume_training() -> None:
         "dry_run": False,
         "no_colors": False,
     }
-    p, _ = fargv.parse(params)
+    p, _ = fargv.parse(params, argv_parse_mode="legacy")
 
     if not p.path:
         print("Error: -path is required.", file=sys.stderr)

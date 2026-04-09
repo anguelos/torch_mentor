@@ -534,7 +534,7 @@ def _apply_lr_coefficient(path: str, patterns: List[str], coefficient: float) ->
 def main_checkpoint() -> None:
     import fargv
     params = {
-        "paths": [],
+        "path": "",
         "no_colors": False,
         "cmd": {
             "view": {},  # no args
@@ -550,13 +550,13 @@ def main_checkpoint() -> None:
             }
         }
     }
-    p, _ = fargv.parse(params)
-    print(p)
-    if not p.paths:
+    p, _ = fargv.parse(params, argv_parse_mode="legacy")
+    if not p.path:
         print("Error: -path is required.")
         raise SystemExit(1)
 
-    for path in p.paths:
+    if True:
+        path = p.path
         if p.cmd == "freeze":
             assert p.layers != [], "At least one pattern is required to freeze layers."
             try:
@@ -741,7 +741,7 @@ def main_plot_file_hist() -> None:
         "overlay": False,
         "output":  "",
     }
-    p, _ = fargv.parse(params)
+    p, _ = fargv.parse(params, argv_parse_mode="legacy")
     paths = list(p.paths)
     if not paths:
         print("Error: -paths requires at least one file, e.g. -paths a.pt b.pt c.pt")
