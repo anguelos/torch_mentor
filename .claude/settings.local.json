@@ -63,7 +63,9 @@
       "Bash(python -m pytest tests/ -q)",
       "Bash(python -m pytest tests/ -q --ignore=tests/cli)",
       "Bash(python -m pytest tests/cli/test_resume.py -v)",
-      "Bash(identify /home/anguelos_ro/workspace/src/torch_mentor/docs/_static/logo.svg)"
+      "Bash(identify /home/anguelos_ro/workspace/src/torch_mentor/docs/_static/logo.svg)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python3 -m pytest tests/ -v)",
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python3 -m pytest tests/ -q)"
     ],
     "defaultMode": "acceptEdits"
   }
