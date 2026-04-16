@@ -238,7 +238,7 @@ def main_resume_training() -> None:
         "dry_run": False,
         "no_colors": False,
     }
-    p, _ = fargv.parse(params, argv_parse_mode="legacy")
+    p, _ = fargv.parse(params)
 
     if not p.path:
         print("Error: -path is required.", file=sys.stderr)

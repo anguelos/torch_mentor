@@ -297,6 +297,52 @@ def _make_loader(
         num_workers=num_workers,
     )
 
+def _ensure_mentee_mixin(klass: type) -> type:
+    """Re-apply the Mentee mixin if wrap_as_mentee stripped it at save time.
+
+    ``wrap_as_mentee`` stores the *original* class module/name in the
+    checkpoint, so ``importlib`` returns the unwrapped class at resume time.
+    This function detects that case and rebuilds the mixed class.
+    """
+    from mentor.mentee import Mentee as _Mentee
+    if issubclass(klass, _Mentee):
+        return klass
+    return type(
+        klass.__name__,
+        (klass, _Mentee),
+        {"__module__": klass.__module__, "__qualname__": klass.__qualname__},
+    )
+
+
+def _inject_mentee_defaults(instance: "Mentee") -> None:
+    """Initialise Mentee instance attributes that __init__ may not have set.
+
+    Required when the wrapped class (e.g. a HuggingFace model) does not
+    cooperatively call ``Mentee.__init__`` via ``super()``.  The checkpoint
+    restore that follows will overwrite most of these with saved values.
+    """
+    for _attr, _default in [
+        ("trainer", None),
+        ("_optimizer", None),
+        ("_lr_scheduler", None),
+        ("_grad_scaler", None),
+        ("_frozen_modules", set()),
+        ("_lr_coefficients", {}),
+        ("_total_train_iterations", 0),
+        ("_inference_state", {}),
+        ("_default_loss_fn", None),
+        ("_best_weights_so_far", {}),
+        ("_best_epoch_so_far", -1),
+        ("_train_history", []),
+        ("_validate_history", {}),
+        ("_software_history", {}),
+        ("_argv_history", {}),
+        ("_constructor_params", {}),
+    ]:
+        if not hasattr(instance, _attr):
+            setattr(instance, _attr, _default)
+
+
 class Mentee(nn.Module):
     """A :class:`torch.nn.Module` subclass that bundles training, validation,
     checkpointing, provenance tracking, and inference state in a single ``.pt``
@@ -1763,7 +1809,7 @@ class Mentee(nn.Module):
                                         if k != "memfails")
                     print(f"epoch   0 | val {val_str} (baseline)")
 
-            for _ in range(epochs):
+            for _ in range(max(0, epochs - self.current_epoch)):
                 train_metrics = self.train_epoch(
                     train_data,
                     self.optimizer,
@@ -2392,6 +2438,7 @@ class Mentee(nn.Module):
         path: Union[str, Path],
         model_class: Optional[Type["Mentee"]] = None,
         tolerate_irresumable_model: bool = True,
+        trainer: Optional[Any] = None,
         **kwargs: Any,
     ) -> "Mentee":
         """Load a checkpoint saved by :meth:`save` and return the model.
@@ -2399,6 +2446,11 @@ class Mentee(nn.Module):
         If *model_class* is ``None``, the class is resolved from the
         ``class_module`` / ``class_name`` fields stored in the checkpoint
         using :func:`importlib.import_module`.
+
+        When the checkpoint was created by :func:`~mentor.wrap_as_mentee`, the
+        stored class name points to the original (unwrapped) class.  ``resume``
+        detects this and re-applies the Mentee mixin automatically, so the
+        returned object is always a :class:`Mentee` instance.
 
         Parameters
         ----------
@@ -2415,6 +2467,11 @@ class Mentee(nn.Module):
             *model_class* using the constructor params stored in the checkpoint
             (or an empty dict when the file is missing or unreadable).
             When ``False``, any such failure raises immediately.
+        trainer : MentorTrainer subclass (uninstantiated), optional
+            If supplied, an instance of this trainer is assigned to
+            ``model.trainer`` after loading.  Use this when the checkpoint was
+            created with :func:`~mentor.wrap_as_mentee` and a custom trainer
+            that is not serialised inside the checkpoint.
 
         Returns
         -------
@@ -2449,7 +2506,9 @@ class Mentee(nn.Module):
                 mod = importlib.import_module(checkpoint["class_module"])
                 model_class = getattr(mod, checkpoint["class_name"])
 
+            model_class = _ensure_mentee_mixin(model_class)
             instance: Mentee = model_class(**checkpoint["constructor_params"])
+            _inject_mentee_defaults(instance)
             instance.load_state_dict(checkpoint["state_dict"])
             instance._train_history = checkpoint["train_history"]
             instance._validate_history = checkpoint["validate_history"]
@@ -2473,6 +2532,15 @@ class Mentee(nn.Module):
                     f"model_class is None — provide model_class when "
                     f"tolerate_irresumable_model=True."
                 ) from _model_exc
+            import warnings
+            warnings.warn(
+                f"Could not fully load checkpoint '{path}' "
+                f"({type(_model_exc).__name__}: {_model_exc}). "
+                f"Falling back to a freshly instantiated model. "
+                f"Pass tolerate_irresumable_model=False to surface this as an error.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
             constructor_params = {}
             try:
                 constructor_params = torch.load(path, weights_only=False).get(
@@ -2480,7 +2548,12 @@ class Mentee(nn.Module):
                 )
             except Exception:
                 pass
+            model_class = _ensure_mentee_mixin(model_class)
             instance = model_class(**constructor_params)
+            _inject_mentee_defaults(instance)
+
+        if trainer is not None:
+            instance.trainer = trainer()
 
         return instance
 
@@ -2577,7 +2650,9 @@ class Mentee(nn.Module):
                 mod = importlib.import_module(checkpoint["class_module"])
                 model_class = getattr(mod, checkpoint["class_name"])
 
+            model_class = _ensure_mentee_mixin(model_class)
             instance: Mentee = model_class(**checkpoint["constructor_params"])
+            _inject_mentee_defaults(instance)
             instance.load_state_dict(checkpoint["state_dict"])
             instance._train_history = checkpoint["train_history"]
             instance._validate_history = checkpoint["validate_history"]
@@ -2601,7 +2676,18 @@ class Mentee(nn.Module):
                     f"model_class is None — provide model_class when "
                     f"tolerate_irresumable_model=True."
                 ) from _model_exc
+            import warnings
+            warnings.warn(
+                f"Could not fully load checkpoint '{path}' "
+                f"({type(_model_exc).__name__}: {_model_exc}). "
+                f"Falling back to a freshly instantiated model. "
+                f"Pass tolerate_irresumable_model=False to surface this as an error.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            model_class = _ensure_mentee_mixin(model_class)
             instance = model_class(**checkpoint.get("constructor_params", {}))
+            _inject_mentee_defaults(instance)
 
         if device is not None:
             instance.to(device)

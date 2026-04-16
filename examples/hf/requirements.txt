@@ -1,0 +1,4 @@
+# More than ../../requirements.txt
+
+transformers
+scipy

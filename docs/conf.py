@@ -15,7 +15,7 @@ release = _version["__version__"]
 version = release
 
 extensions = [
-    "sphinx.ext.autodoc",
+    # "sphinx.ext.autodoc", This causes bad rst rendering of docstrings
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.linkcode",
@@ -39,7 +39,7 @@ intersphinx_mapping = {
 # ---------------------------------------------------------------------------
 # autodoc / autosummary
 # ---------------------------------------------------------------------------
-autosummary_generate = True
+#autosummary_generate = True  # This causes duplicate entries in the API reference and badly rendered docstrings, so we will generate the autosummary tables manually for now
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 autodoc_default_options = {

@@ -65,7 +65,16 @@
       "Bash(python -m pytest tests/cli/test_resume.py -v)",
       "Bash(identify /home/anguelos_ro/workspace/src/torch_mentor/docs/_static/logo.svg)",
       "Bash(/home/anguelos_ro/venvs/p312/bin/python3 -m pytest tests/ -v)",
-      "Bash(/home/anguelos_ro/venvs/p312/bin/python3 -m pytest tests/ -q)"
+      "Bash(/home/anguelos_ro/venvs/p312/bin/python3 -m pytest tests/ -q)",
+      "Bash(python -m sphinx -b text docs /tmp/mentor_sphinx_test)",
+      "Bash(python -m sphinx -b html docs /tmp/mentor_sphinx_html)",
+      "Bash(python -c \"import sphinx; print\\('sphinx:', sphinx.__version__\\)\")",
+      "Bash(python -c \"import myst_parser; print\\('myst_parser:', myst_parser.__version__\\)\")",
+      "Bash(python -c \"import docutils; print\\('docutils:', docutils.__version__\\)\")",
+      "Bash(python -m pytest tests/unit_testing/test_mentee.py tests/unit_testing/test_wrap_as_mentee.py -q --tb=short)",
+      "Bash(python -m pytest tests/unit_testing/test_mentee.py tests/unit_testing/test_wrap_as_mentee.py --tb=short)",
+      "Bash(python -m pytest tests/unit_testing/test_mentee.py tests/unit_testing/test_wrap_as_mentee.py)",
+      "Bash(python -m sphinx -b text docs /tmp/mentor_sphinx_test -q)"
     ],
     "defaultMode": "acceptEdits"
   }

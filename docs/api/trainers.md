@@ -20,22 +20,25 @@ injecting the cached `loss_fn`.
 
 ## MentorTrainer
 
-```{autoclass} mentor.trainers.MentorTrainer
-:members:
-:special-members: __init__
-:show-inheritance:
+```{eval-rst}
+.. autoclass:: mentor.trainers.MentorTrainer
+   :members:
+   :special-members: __init__
+   :show-inheritance:
 ```
 
 ## Classifier
 
-```{autoclass} mentor.trainers.Classifier
-:members:
-:show-inheritance:
+```{eval-rst}
+.. autoclass:: mentor.trainers.Classifier
+   :members:
+   :show-inheritance:
 ```
 
 ## Regressor
 
-```{autoclass} mentor.trainers.Regressor
-:members:
-:show-inheritance:
+```{eval-rst}
+.. autoclass:: mentor.trainers.Regressor
+   :members:
+   :show-inheritance:
 ```

@@ -550,7 +550,7 @@ def main_checkpoint() -> None:
             }
         }
     }
-    p, _ = fargv.parse(params, argv_parse_mode="legacy")
+    p, _ = fargv.parse(params)
     if not p.path:
         print("Error: -path is required.")
         raise SystemExit(1)
@@ -741,7 +741,7 @@ def main_plot_file_hist() -> None:
         "overlay": False,
         "output":  "",
     }
-    p, _ = fargv.parse(params, argv_parse_mode="legacy")
+    p, _ = fargv.parse(params)
     paths = list(p.paths)
     if not paths:
         print("Error: -paths requires at least one file, e.g. -paths a.pt b.pt c.pt")
